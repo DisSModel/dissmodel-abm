@@ -398,7 +398,18 @@ class Society:
         attrs["geometry"] = geometry
 
         gdf = self.gdf
-        next_idx = (max(gdf.index) + 1) if len(gdf) else 0
+        if len(gdf) == 0:
+            next_idx = 0
+        else:
+            try:
+                next_idx = max(gdf.index) + 1
+            except TypeError:
+                # Non-numeric index (e.g. the "row-col" string ids used by
+                # vector_grid) -- mint a fresh id guaranteed not to collide
+                # with existing ones, instead of failing on `max(...) + 1`.
+                next_idx = f"_agent_{len(gdf)}"
+                while next_idx in gdf.index:
+                    next_idx += "_"
 
         # Mutate the existing GeoDataFrame in place (rather than
         # reassigning self.gdf to a new object) so that any external
