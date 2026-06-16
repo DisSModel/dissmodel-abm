@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dissmodel-abm"
+version = "0.1.0"
+description = "Agent-Based Modeling (ABM) extension for dissmodel, inspired by TerraME's Agent/Society API"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "dissmodel>=0.6.0",
+    "geopandas",
+    "shapely",
+    "numpy",
+    "pandas",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+viz = [
+    "matplotlib",
+    "streamlit",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = [
+    "dissmodel_abm",
+    "dissmodel_abm.core",
+    "dissmodel_abm.models",
+]
