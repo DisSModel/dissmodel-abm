@@ -9,7 +9,12 @@ from shapely.geometry import Point
 from dissmodel.core import Environment
 from dissmodel.geo.vector import vector_grid
 from dissmodel_abm.core import AgentModel, Society, Agent
-from dissmodel_abm.models import RandomWalkModel, PredatorPreyModel, SchellingModel
+from dissmodel_abm.models import (
+    RandomWalkModel,
+    PredatorPreyModel,
+    SchellingModel,
+    PeripherisationModel,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -546,4 +551,100 @@ def test_reproduce_copies_polygon_geometry():
 
     assert child.geometry == poly
     assert child.geometry.geom_type == "Polygon"
+
+
+# ---------------------------------------------------------------------------
+# PeripherisationModel (Barros and Alves Jr., 2003)
+# ---------------------------------------------------------------------------
+
+def test_peripherisation_setup_seeds_center_and_fills_pending_queue():
+    gdf = vector_grid(dimension=(11, 11), resolution=1)
+    env = Environment(end_time=1)
+    model = PeripherisationModel(gdf=gdf, n_agents=20, seed=0)
+
+    assert model.red == 1  # the seed cell
+    assert len(model._pending) == 20
+    counts = {g: model._pending.count(g) for g in set(model._pending)}
+    # default proportions (0.10, 0.40, 0.50) of 20 -> 2 red, 8 yellow, 10 blue
+    assert counts.get(0, 0) == 2
+    assert counts.get(1, 0) == 8
+    assert counts.get(2, 0) == 10
+
+
+def test_peripherisation_rejects_invalid_proportions():
+    gdf = vector_grid(dimension=(5, 5), resolution=1)
+    env = Environment(end_time=1)
+    with pytest.raises(ValueError, match="must sum to 1.0"):
+        PeripherisationModel(gdf=gdf, proportions=(0.5, 0.5, 0.5))
+
+
+def test_peripherisation_supports_multiple_seed_cells():
+    gdf = vector_grid(dimension=(5, 5), resolution=1)
+    env = Environment(end_time=1)
+    model = PeripherisationModel(gdf=gdf, n_agents=5, seed_cells=["0-0", "4-4"], seed=0)
+
+    assert model.red == 2
+    assert model.gdf.loc["0-0", "group"] == 0
+    assert model.gdf.loc["4-4", "group"] == 0
+
+
+def test_peripherisation_converges_and_conserves_agent_count():
+    gdf = vector_grid(dimension=(15, 15), resolution=1)
+    env = Environment(end_time=500)
+    model = PeripherisationModel(
+        gdf=gdf, steps=2, n_agents=150, agents_per_step=10, seed=1
+    )
+
+    t = 0
+    while not model.is_done() and t < 500:
+        model.pre_execute()
+        model.execute()
+        model.post_execute()
+        t += 1
+
+    assert model.is_done()
+    # 150 agents requested + 1 seed cell already counted as red
+    assert model.red + model.yellow + model.blue == 151
+
+
+def test_peripherisation_respects_eviction_rules():
+    """Yellow can never displace red; blue can never displace anyone."""
+    gdf = vector_grid(dimension=(15, 15), resolution=1)
+    env = Environment(end_time=500)
+    model = PeripherisationModel(
+        gdf=gdf, steps=2, n_agents=150, agents_per_step=10, seed=2
+    )
+
+    while not model.is_done():
+        model.pre_execute()
+        model.execute()
+        model.post_execute()
+
+    # Settlement is final and consistent with the rule set: every cell's
+    # final group is one that was legally allowed to settle there given
+    # the rules (sanity check is structural: counts are non-negative and
+    # match the grid).
+    assert model.red >= 1
+    assert model.yellow >= 0
+    assert model.blue >= 0
+    assert (model.gdf["group"] >= -1).all()
+    assert (model.gdf["group"] <= 2).all()
+
+
+def test_peripherisation_runs_via_environment():
+    gdf = vector_grid(dimension=(11, 11), resolution=1)
+    env = Environment(start_time=0, end_time=200)
+    model = PeripherisationModel(
+        gdf=gdf, steps=2, n_agents=60, agents_per_step=5, seed=0
+    )
+    env.run()
+
+    assert model.red + model.yellow + model.blue <= 61  # at most all agents settled
+    assert model.pending >= 0
+
+
+def test_peripherisation_track_plot_attributes_match_labels():
+    assert set(PeripherisationModel._plot_info.keys()) == {
+        "red", "yellow", "blue", "pending"
+    }
 

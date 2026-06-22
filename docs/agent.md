@@ -534,6 +534,48 @@ later, this loop body is exactly what they would wrap.
 
 ---
 
+## Worked example: Peripherisation
+
+[`PeripherisationModel`](../src/dissmodel_abm/models/peripherisation.py)
+(Barros and Alves Jr., 2003) is another one-agent-per-cell model,
+notable here because it combines `die`/`reproduce`-style population
+churn (evicted agents re-enter a pending pool) with the same grid
+topology approach as Schelling, on a TerraME-equivalent ``Society`` of
+*not-yet-settled* agents — agents that exist before they have a
+``Cell``, exactly mirroring the
+[agents-without-a-location](#agents-without-a-location) idea:
+
+```python
+def _try_settle(self, cell_id: str, group: int) -> bool:
+    current = self.society[cell_id].group     # ~ Cell:getValue()
+
+    if group == RED:
+        can_settle = True
+    elif group == YELLOW:
+        can_settle = current != RED
+    else:  # BLUE
+        can_settle = current == EMPTY
+
+    if not can_settle:
+        return False
+
+    if current != EMPTY:
+        self._pending.append(current)          # ~ evicted Agent:die() + re-queue
+
+    self.society[cell_id].group = group         # ~ Agent:enter(cell)
+    return True
+```
+
+Unlike `PredatorPreyModel`'s `agent.die()` / `agent.reproduce()` (which
+operate on `Society` members directly), pending agents here are tracked
+as a plain list of "group" integers rather than `Agent` objects — they
+only become `Agent` instances (cells in `self.society`) once they
+successfully settle. This is a deliberate simplification: the model
+only ever needs an agent's *group*, not a fully-fledged identity, before
+it has a `Cell`.
+
+---
+
 ## Not implemented
 
 These TerraME `Agent` functions have no dissmodel-abm equivalent today:

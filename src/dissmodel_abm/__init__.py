@@ -21,7 +21,7 @@ This package does not modify dissmodel's core. It provides:
   ``self.society``.
 """
 from .core import AgentModel, Society, Agent
-from .models import RandomWalkModel, PredatorPreyModel, SchellingModel
+from .models import RandomWalkModel, PredatorPreyModel, SchellingModel, PeripherisationModel
 
 __all__ = [
     "AgentModel",
@@ -30,6 +30,7 @@ __all__ = [
     "RandomWalkModel",
     "PredatorPreyModel",
     "SchellingModel",
+    "PeripherisationModel",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

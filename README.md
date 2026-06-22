@@ -182,18 +182,23 @@ dissmodel-abm/
 │   │   ├── agent_model.py   # AgentModel(SpatialModel) — no core changes
 │   │   └── society.py       # Society / Agent — the protective layer
 │   └── models/
-│       ├── random_walk.py     # minimal example (point agents)
-│       ├── predator_prey.py   # wolf-sheep, written against self.society
-│       └── schelling.py       # segregation model, one agent per cell
+│       ├── random_walk.py        # minimal example (point agents)
+│       ├── predator_prey.py      # wolf-sheep, written against self.society
+│       ├── schelling.py          # segregation model, one agent per cell
+│       └── peripherisation.py    # Barros & Alves Jr. (2003) urban-growth model
 ├── examples/
 │   ├── cli/
 │   │   ├── abm_random_walk.py
 │   │   ├── abm_predator_prey.py
-│   │   └── abm_schelling.py
+│   │   ├── abm_schelling.py
+│   │   └── abm_peripherisation.py
 │   └── streamlit/
 │       ├── abm_random_walk.py
 │       ├── abm_predator_prey.py
-│       └── abm_schelling.py
+│       ├── abm_schelling.py
+│       └── abm_peripherisation.py
+├── docs/
+│   └── agent.md
 ├── tests/
 │   └── test_agent_model.py
 └── pyproject.toml
@@ -206,6 +211,7 @@ dissmodel-abm/
 | `RandomWalkModel`    | Vector (points) | —                       | —                                                            | Independent random walk within a bounding box.          |
 | `PredatorPreyModel`  | Vector (points) | `sheep`, `wolves`       | —                                                            | Wolf-sheep dynamics: movement, predation, death, reproduction, optional grazing. |
 | `SchellingModel`     | Vector (grid cells) | `satisfaction`      | [TerraME `logo`: Schelling](https://www.terrame.org/package/logo/models/#schelling) | Segregation model: agents move to empty cells when unhappy with same-type neighbor count. |
+| `PeripherisationModel` | Vector (grid cells) | `red`, `yellow`, `blue`, `pending` | [Barros & Alves Jr. (2003)](http://www.dpi.inpe.br/gilberto/cursos/st-society/barros-phd-thesis.pdf) | Urban-growth segregation model: three income groups settle on a grid, all preferring proximity to high-income cells, producing a core-periphery pattern. |
 
 ### Schelling model (ported from TerraME `logo`)
 
@@ -229,6 +235,54 @@ Parameters match TerraME's defaults (`dim=25`, `freeSpace=25%`,
 `preference=3`). `agent_type`: `-1` = empty, `0`/`1` = the two agent
 groups. `model.fraction_satisfied()` returns the fraction of agents with
 at least `preference` same-type Queen-neighbors.
+
+### Peripherisation Model (Barros & Alves Jr., 2003)
+
+```python
+from dissmodel.core import Environment
+from dissmodel.geo.vector import vector_grid
+from dissmodel_abm.models import PeripherisationModel
+
+gdf = vector_grid(dimension=(31, 31), resolution=1)
+env = Environment(start_time=0, end_time=1500)
+
+model = PeripherisationModel(
+    gdf=gdf, steps=2, n_agents=900,
+    proportions=(0.10, 0.40, 0.50),  # red, yellow, blue
+    seed=3,
+)
+env.run()
+
+print(model.red, model.yellow, model.blue, model.is_done())
+```
+
+Ported from Joana Barros' PhD thesis *"Urban Growth in Latin American
+Cities: Exploring urban dynamics through agent-based simulation"* (UCL,
+2004) — originally implemented in StarLogo, later in FORTRAN, RePast
+(Java), and a TerraME/Lua dialect. This is a from-scratch port of the
+*original* StarLogo rule set (Barros & Alves Jr., 2003), not a
+translation of the Lua dialect, which implements a different
+region/density-based rule set on top of the same general idea.
+
+Population is split into three economic groups — `red` (high income,
+minority), `yellow` (middle income), `blue` (low income, majority) — all
+sharing the same locational preference (proximity to red/high-income
+cells, representing infrastructure), but differing in their economic
+power to displace others: `red` can settle anywhere (evicting whoever is
+there), `yellow` can settle anywhere except on `red`, and `blue` can
+only settle on empty cells. Each pending agent performs a biased random
+walk of length `steps` (the model's central parameter) toward the
+centroid of existing red cells before attempting to settle; evicted
+agents re-enter the pool and try again. This produces the
+**core-periphery** pattern central to the thesis — red clustered near
+the seed, yellow forming a ring around it, and blue pushed to the
+periphery — the inverse of the classic Burgess concentric-ring model,
+matching the income gradient observed in Latin American cities (see
+thesis chapter 6 and Barros & Alves Jr., 2003, section 4).
+
+`model.is_done()` reports whether every agent has settled;
+`model.occupied_fraction()` returns the fraction of the grid currently
+occupied.
 
 ## Documentation
 
@@ -258,7 +312,8 @@ dissmodel-abm equivalent yet (social networks, state machines).
 ```bash
 python examples/cli/abm_random_walk.py
 python examples/cli/abm_predator_prey.py
-python examples/cli/abm_schelling.py   # also writes PNG frames to ./map_frames/
+python examples/cli/abm_schelling.py        # also writes PNG frames to ./map_frames/
+python examples/cli/abm_peripherisation.py
 ```
 
 ## Streamlit explorers
@@ -271,8 +326,9 @@ sidebar sliders control parameters, a live `Map` shows the spatial
 state, and (where relevant) a live `Chart` shows tracked variables over
 time. `Chart` requires no per-app wiring — it reads whatever the model
 exposes via `@track_plot` (`PredatorPreyModel.sheep` / `.wolves`,
-`SchellingModel.satisfaction`), the exact convention used by
-`dissmodel-sysdyn`'s `SIR` model.
+`SchellingModel.satisfaction`, `PeripherisationModel.red` / `.yellow` /
+`.blue` / `.pending`), the exact convention used by `dissmodel-sysdyn`'s
+`SIR` model.
 
 ```bash
 pip install -e ".[viz]"
@@ -280,6 +336,7 @@ pip install -e ".[viz]"
 streamlit run examples/streamlit/abm_random_walk.py
 streamlit run examples/streamlit/abm_predator_prey.py   # Map + population Chart
 streamlit run examples/streamlit/abm_schelling.py        # Map + satisfaction Chart
+streamlit run examples/streamlit/abm_peripherisation.py  # Map + population-by-group Chart
 ```
 
 ## Running the tests
