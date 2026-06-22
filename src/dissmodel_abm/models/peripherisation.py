@@ -1,92 +1,51 @@
 """
 dissmodel_abm/models/peripherisation.py
 =========================================
-The Peripherisation Model (Barros and Alves Jr., 2003), from Joana Barros'
-PhD thesis *"Urban Growth in Latin American Cities: Exploring urban
-dynamics through agent-based simulation"* (UCL, 2004,
-http://www.dpi.inpe.br/gilberto/cursos/st-society/barros-phd-thesis.pdf).
-
-Originally implemented in StarLogo, later in FORTRAN, RePast (JAVA), and
-in a TerraME/Lua dialect (the variant that prompted this port). This is
-a from-scratch Python port of the *original* StarLogo rule set, as
-described in the thesis and in Barros & Alves Jr. (2003) "Simulating
-Rapid Urbanisation in Latin American Cities" — not a translation of the
-Lua variant, which implements a different (region/density-based) rule
-set built on top of the same general idea.
+The Peripherisation Model (Barros and Alves Jr., 2003), ported from the
+TerraME/Lua implementation (``agent_barro_maio2.lua``).
 
 The model
 ---------
-Population is divided into three economic groups, following the
-pyramidal income-distribution model used in Latin American urban
-studies:
+Population is divided into three economic groups:
 
-- **red** (``group=0``)    — high income, a minority
+- **red** (``group=0``)    — high income
 - **yellow** (``group=1``) — middle income
-- **blue** (``group=2``)   — low income, the majority
+- **blue** (``group=2``)   — low income
 
-All agents share the same locational preference: they want to settle
-close to infrastructure, which in the model is represented by proximity
-to red (high-income) cells. What differs between the three groups is
-the *economic power to displace others*:
+Settlement rules (faithful to the Lua ``random_localize`` function):
 
-- **red** can settle anywhere, evicting whoever already occupies that
-  cell (the evicted agent re-enters the pool of agents looking for a
-  place to settle).
-- **yellow** can settle anywhere *except* on a red cell.
-- **blue** can only settle on an empty cell.
+- **red** and **yellow** may settle on any empty cell, sorted by
+  ``dist_centro`` ascending — i.e. they pick the available empty cell
+  that is *closest to the existing settlement core*.
+- **blue** may only settle in *low-density* areas: empty cells whose
+  fraction of occupied Queen-neighbors is ≤ ``low_density_threshold``
+  (matching ``rg[3]``, density ≤ 0.4, in the Lua model). Within those
+  cells they also prefer the one closest to the core.
+- After every tick, blue agents that drifted into the *centro* region
+  (local density ≥ ``centro_density_threshold``) are removed and
+  returned to the queue (mirroring ``SpatialAgent:execute()`` in Lua).
 
-Each pending agent performs a biased random walk of length ``steps``
-(the model's central parameter) across the grid — favoring movement
-toward the centroid of currently-occupied red cells — and then attempts
-to settle on the cell it ends up on, according to its group's rule
-above. If settlement fails (e.g. a blue agent landing on an occupied
-cell), the agent stays in the pool and tries again next step.
+``dist_centro`` is defined as the Euclidean distance from each cell's
+centroid to the centroid of all currently-occupied cells (proxy for
+distance to the "centro" region used in the Lua model).
 
-This produces the core-periphery pattern described in the thesis: red
-clusters near the seed, yellow forms around red, and blue is pushed to
-the outer ring — the opposite of the classic Burgess concentric-ring
-model, matching the inverted income gradient observed in Latin American
-cities.
-
-Parameters (paper's names in parentheses)
--------------------------------------------
-- ``steps`` (``steps``): number of biased random-walk steps a pending
-  agent takes before attempting to settle. Larger values pull
-  settlement closer to existing red cells per attempt, but each step
-  also costs one model tick per agent, so larger ``steps`` produces
-  slower, more homogeneous growth; smaller ``steps`` produces faster,
-  more spread-out growth (thesis section 7.4.1.1).
-- ``proportions`` (``proportion of agents per economic group``): the
-  (red, yellow, blue) split, e.g. ``(0.10, 0.40, 0.50)`` — the thesis'
-  default pyramidal distribution.
-- ``n_agents``: total number of agents to place over the course of the
-  simulation.
-- ``agents_per_step``: how many pending agents attempt to walk/settle
-  each model tick (the thesis' StarLogo original effectively processes
-  many agents per tick; this is exposed as a parameter for
-  performance/visual-pacing control rather than being part of the
-  original model).
-- ``seed_cells``: initial red seed(s) the simulation grows from
-  (defaults to a single central seed, the thesis' most common initial
-  condition; see thesis Figure 6.9 / section 7.4.1.3 for alternatives
-  such as multiple seeds, a path, or a colonial grid).
-
-dissmodel-abm mapping
-----------------------
-Like ``SchellingModel``, this is a one-agent-per-cell model: ``self.gdf``
-is a polygon grid from ``dissmodel.geo.vector.vector_grid``, and every
-cell is an :class:`~dissmodel_abm.core.Agent` with a ``group`` attribute.
-Pending (not-yet-settled) agents are tracked separately as a simple
-in-memory queue — they are not yet cells, so they aren't
-``Society`` members until they settle (mirrors the StarLogo/RePast
-agent lifecycle, where an agent exists and walks before acquiring a
-``patch``/``Cell``).
-
-Live plotting
--------------
-``red``, ``yellow``, ``blue``, and ``pending``
-are registered via ``@track_plot``, matching the convention used by
-``PredatorPreyModel`` and ``SchellingModel``.
+Parameters
+----------
+proportions : tuple of float
+    ``(red, yellow, blue)`` fractions, default ``(0.10, 0.40, 0.50)``.
+n_agents : int or None
+    Total agents to place (default: fills the grid minus seed cells).
+agents_per_step : int
+    Agents processed per tick, default 5.
+low_density_threshold : float
+    Maximum local density for blue-income cells, default 0.4.
+centro_density_threshold : float
+    Minimum local density to be considered "centro"; blue is banned
+    from these cells, default 0.9.
+seed_cells : list or None
+    Cell ids pre-seeded as red (default: single central cell).
+seed : int or None
+    Random seed.
 """
 from __future__ import annotations
 
@@ -103,8 +62,6 @@ RED = 0      # high income
 YELLOW = 1   # middle income
 BLUE = 2     # low income
 
-_GROUP_NAMES = {RED: "red", YELLOW: "yellow", BLUE: "blue"}
-
 
 @track_plot("Red", "tab:red")
 @track_plot("Yellow", "tab:olive")
@@ -112,95 +69,86 @@ _GROUP_NAMES = {RED: "red", YELLOW: "yellow", BLUE: "blue"}
 @track_plot("Pending", "gray")
 class PeripherisationModel(AgentModel):
     """
-    The Peripherisation Model (Barros and Alves Jr., 2003).
+    The Peripherisation Model (Barros and Alves Jr., 2003) — Lua variant.
 
-    Parameters
-    ----------
-    gdf : geopandas.GeoDataFrame
-        Polygon grid, e.g. from
-        ``dissmodel.geo.vector.vector_grid(dimension=(dim, dim), resolution=1)``.
-        A ``group`` column is added if not present.
-    steps : int, optional
-        Number of biased random-walk steps a pending agent takes before
-        attempting to settle, by default 2 (a thesis-typical value;
-        thesis tests steps in {1, 2, 4, 8}).
-    proportions : tuple of float, optional
-        ``(red, yellow, blue)`` fractions of the agent population, by
-        default ``(0.10, 0.40, 0.50)`` (the thesis' pyramidal default).
-        Must sum to 1.0.
-    n_agents : int, optional
-        Total number of agents to place over the simulation, by default
-        ``None``, meaning one agent per non-seed cell in the grid (fills
-        the grid).
-    agents_per_step : int, optional
-        How many pending agents attempt to walk/settle each tick, by
-        default 5.
-    seed_cells : list of str, optional
-        Cell ids to seed as red at setup, by default ``None``, meaning a
-        single central seed (the thesis' most common initial condition).
-    seed : int, optional
-        Random seed, by default ``None``.
-
-    Notes
-    -----
-    Each occupied cell holds ``group``:
-
-    - ``-1`` : empty cell
-    - ``0``  : red (high income)
-    - ``1``  : yellow (middle income)
-    - ``2``  : blue (low income)
-
-    Examples
-    --------
-    >>> from dissmodel.core import Environment
-    >>> from dissmodel.geo.vector import vector_grid
-    >>> from dissmodel_abm.models.peripherisation import PeripherisationModel
-    >>> gdf = vector_grid(dimension=(31, 31), resolution=1)
-    >>> env = Environment(end_time=200)
-    >>> model = PeripherisationModel(gdf=gdf, steps=2, n_agents=400, seed=0)
-    >>> env.run()  # doctest: +SKIP
+    See module docstring for full description.
     """
 
-    #: Current number of red (high-income) cells (tracked for live plotting).
     red: int = 0
-    #: Current number of yellow (middle-income) cells (tracked for live plotting).
     yellow: int = 0
-    #: Current number of blue (low-income) cells (tracked for live plotting).
     blue: int = 0
-    #: Number of agents still trying to settle (tracked for live plotting).
     pending: int = 0
 
     def setup(
         self,
-        steps: int = 2,
         proportions: tuple[float, float, float] = (0.10, 0.40, 0.50),
         n_agents: Optional[int] = None,
         agents_per_step: int = 5,
+        low_density_threshold: float = 0.4,
+        centro_density_threshold: float = 0.9,
         seed_cells: Optional[list] = None,
         seed: Optional[int] = None,
     ) -> None:
         if abs(sum(proportions) - 1.0) > 1e-6:
             raise ValueError(f"proportions must sum to 1.0, got {proportions}")
 
-        self.steps = steps
         self.proportions = proportions
         self.agents_per_step = agents_per_step
+        self._low_dens = low_density_threshold
+        self._centro_dens = centro_density_threshold
         self._rng = np.random.default_rng(seed)
 
         self.create_neighborhood(strategy=Queen, use_index=True)
 
-        if "group" not in self.gdf.columns:
-            self.gdf["group"] = EMPTY
-        else:
-            self.gdf["group"] = EMPTY  # always start from a clean slate
+        self.gdf["group"] = EMPTY
 
-        # Seed the initial red cell(s) (thesis: single central seed by
-        # default; see thesis section 7.4.1.3 for alternative initial
-        # conditions such as multiple seeds, a path, or a colonial grid).
+        # --- fast lookup structures -------------------------------------------
+        idx_list = list(self.gdf.index)
+        id_to_idx = {k: i for i, k in enumerate(idx_list)}
+        self._idx_to_id = idx_list
+        cx = self.gdf.geometry.centroid.x
+        cy = self.gdf.geometry.centroid.y
+        self._cx = np.array([cx[k] for k in idx_list], dtype=float)
+        self._cy = np.array([cy[k] for k in idx_list], dtype=float)
+
+        # 1-step neighbor lists (Queen)
+        neigh1 = [
+            [id_to_idx[n] for n in self.neighs_id(k)] for k in idx_list
+        ]
+
+        # 2-step neighborhood: union of neighbors-of-neighbors, excluding self.
+        # This approximates the coarser-grid density used in the Lua model
+        # (cs2 with res=2), smoothing the density field so that the blue
+        # density threshold is not too restrictive.
+        neigh2 = []
+        for i, ns1 in enumerate(neigh1):
+            extended: set[int] = set(ns1)
+            for j in ns1:
+                extended.update(neigh1[j])
+            extended.discard(i)
+            neigh2.append(sorted(extended))
+
+        max_k = max(len(ns) for ns in neigh2) if neigh2 else 0
+        self._neigh_mat = np.full((len(idx_list), max_k), -1, dtype=np.int32)
+        self._neigh_cnt = np.zeros(len(idx_list), dtype=np.int32)
+        for i, ns in enumerate(neigh2):
+            self._neigh_mat[i, : len(ns)] = ns
+            self._neigh_cnt[i] = len(ns)
+
+        # Writable numpy array mirroring gdf["group"] — avoids pandas read-only
+        # views inside execute() and gives O(1) indexed access.
+        self._groups = np.full(len(idx_list), EMPTY, dtype=np.int32)
+
+        # Incremental group counters (avoid full-grid pandas scans per tick)
+        self._count = {RED: 0, YELLOW: 0, BLUE: 0}
+
+        # --- seed red cells ---------------------------------------------------
         if seed_cells is None:
             seed_cells = [self._central_cell_id()]
         for cell_id in seed_cells:
             self.society[cell_id].group = RED
+            self._groups[id_to_idx[cell_id]] = RED
+            self._count[RED] += 1
 
         if n_agents is None:
             n_agents = len(self.gdf) - len(seed_cells)
@@ -209,28 +157,112 @@ class PeripherisationModel(AgentModel):
         n_yellow = round(n_agents * proportions[1])
         n_blue = n_agents - n_red - n_yellow
 
-        pending = [RED] * n_red + [YELLOW] * n_yellow + [BLUE] * n_blue
-        self._rng.shuffle(pending)
-        self._pending: list[int] = pending
+        # Separate queues per group: process RED → YELLOW → BLUE each tick
+        # (matches the sequential order in the Lua model)
+        self._q_red: list[int] = [RED] * n_red
+        self._q_yellow: list[int] = [YELLOW] * n_yellow
+        self._q_blue: list[int] = [BLUE] * n_blue
 
         self._update_tracked_counts()
 
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
+
     def execute(self) -> None:
-        if not self._pending:
+        total = len(self._q_red) + len(self._q_yellow) + len(self._q_blue)
+        if total == 0:
             self._update_tracked_counts()
             return
 
-        red_target = self._red_centroid()
-        n = min(self.agents_per_step, len(self._pending))
+        groups = self._groups  # writable numpy array, kept in sync with gdf
 
-        for _ in range(n):
-            group = self._pending.pop(0)
-            cell_id = self._walk(red_target)
-            settled = self._try_settle(cell_id, group)
-            if not settled:
-                # Failed to settle (cell occupied by a group this agent
-                # can't evict) — back of the queue to try again later.
-                self._pending.append(group)
+        # Local density: fraction of Queen-neighbors that are occupied
+        density = self._local_density(groups)
+
+        # dist_centro: distance to centroid of all occupied cells
+        occ_mask = groups != EMPTY
+        if occ_mask.any():
+            occ_cx = self._cx[occ_mask].mean()
+            occ_cy = self._cy[occ_mask].mean()
+        else:
+            occ_cx, occ_cy = self._cx.mean(), self._cy.mean()
+        dist_centro = np.hypot(self._cx - occ_cx, self._cy - occ_cy)
+
+        # Place 1 agent of each group per "slot" — matches the Lua model
+        # (1 high, 1 middle, 1 low per tick).  The total composition is
+        # determined by queue sizes (set by proportions in setup), so the
+        # final proportions are respected even with equal per-tick rates.
+        # This also produces cleaner ring separation: red always picks
+        # before yellow each tick, so red stays closer to the core.
+        n_per_group = max(1, round(self.agents_per_step / 3))
+
+        for queue, group in (
+            (self._q_red,    RED),
+            (self._q_yellow, YELLOW),
+            (self._q_blue,   BLUE),
+        ):
+            for _ in range(n_per_group):
+                if not queue:
+                    break
+
+                queue.pop(0)
+                empty = groups == EMPTY
+
+                if group == BLUE:
+                    # Low income restricted to low-density peripheral cells
+                    cand = empty & (density <= self._low_dens)
+                    if not cand.any():
+                        queue.insert(0, group)  # no suitable cell this tick
+                        break
+                else:
+                    cand = empty
+                    if not cand.any():
+                        queue.insert(0, group)
+                        break
+
+                cand_idx = np.where(cand)[0]
+                cand_dist = dist_centro[cand_idx]
+
+                # Sort ascending: closest to core first (like Lua's sort by
+                # dist_centro and then pick cells[1])
+                order = np.argsort(cand_dist)
+                sorted_cands = cand_idx[order]
+
+                # RandomTrajectory randomness: pick from top-sqrt(n) candidates
+                k = max(1, int(np.sqrt(len(sorted_cands))))
+                chosen = sorted_cands[self._rng.integers(min(k, len(sorted_cands)))]
+
+                groups[chosen] = group
+                self._count[group] += 1
+
+        # Ban blue from "centro" (high-density core) — mirrors
+        # SpatialAgent:execute() in the Lua model.  After expulsion the
+        # agent immediately tries to re-settle in a low-density cell
+        # (same tick), using the same dist_centro snapshot.
+        ban = (groups == BLUE) & (density >= self._centro_dens)
+        if ban.any():
+            ban_idx = np.where(ban)[0]
+            groups[ban_idx] = EMPTY
+            self._count[BLUE] -= len(ban_idx)
+
+            for _ in range(len(ban_idx)):
+                empty = groups == EMPTY
+                cand = empty & (density <= self._low_dens)
+                if not cand.any():
+                    self._q_blue.append(BLUE)  # no space now, retry next tick
+                    continue
+                cand_idx = np.where(cand)[0]
+                order = np.argsort(dist_centro[cand_idx])
+                sorted_cands = cand_idx[order]
+                k = max(1, int(np.sqrt(len(sorted_cands))))
+                chosen = sorted_cands[self._rng.integers(min(k, len(sorted_cands)))]
+                groups[chosen] = BLUE
+                self._count[BLUE] += 1
+
+        # Sync _groups → gdf["group"] once per tick (batch update is much
+        # faster than calling society[cell_id].group = x for every agent)
+        self.gdf["group"] = groups
 
         self._update_tracked_counts()
 
@@ -239,129 +271,38 @@ class PeripherisationModel(AgentModel):
     # ------------------------------------------------------------------
 
     def _central_cell_id(self) -> str:
-        """Return the id of the grid cell closest to the overall centroid."""
         gdf = self.gdf
         overall = gdf.geometry.union_all().centroid
         dists = gdf.geometry.centroid.distance(overall)
         return gdf.index[dists.argmin()]
 
-    def _red_centroid(self) -> Optional[tuple[float, float]]:
-        """Centroid of all currently-occupied red cells, or None if there are none."""
-        red = self.society.select(lambda a: a.group == RED)
-        if not red:
-            return None
-        xs = [a.geometry.centroid.x for a in red]
-        ys = [a.geometry.centroid.y for a in red]
-        return (float(np.mean(xs)), float(np.mean(ys)))
-
-    def _walk(self, target: Optional[tuple[float, float]]) -> str:
-        """
-        Perform a biased random walk of length ``self.steps`` starting
-        from a random occupied cell's neighbor (agents enter the
-        simulated space adjacent to already-settled cells, mirroring the
-        Lua reference's ``random_localize`` choosing a cell near the
-        existing settlement rather than anywhere on the grid), and
-        return the id of the cell the walk ends on.
-
-        Each step moves to a Queen-neighbor of the current cell, biased
-        toward ``target`` (the centroid of red cells) via inverse-
-        distance weighting when ``target`` is given; otherwise the walk
-        is uniformly random.
-        """
-        current = self._entry_cell()
-
-        for _ in range(self.steps):
-            neighs = self.neighs_id(current)
-            if not neighs:
-                break
-            if target is not None:
-                dists = np.array([
-                    np.hypot(
-                        self.gdf.at[n, "geometry"].centroid.x - target[0],
-                        self.gdf.at[n, "geometry"].centroid.y - target[1],
-                    )
-                    for n in neighs
-                ])
-                weights = 1.0 / (dists + 0.1)
-                probs = weights / weights.sum()
-                current = neighs[self._rng.choice(len(neighs), p=probs)]
-            else:
-                current = neighs[self._rng.integers(len(neighs))]
-
-        return current
-
-    def _entry_cell(self) -> str:
-        """
-        Pick a starting cell for a new agent's walk: a random neighbor of
-        a random already-occupied cell, so agents enter adjacent to the
-        growing settlement rather than appearing anywhere on the grid.
-        Falls back to a uniformly random cell if nothing is occupied yet.
-        """
-        occupied = self.gdf.index[self.gdf["group"] != EMPTY]
-        if len(occupied) == 0:
-            return self.gdf.index[self._rng.integers(len(self.gdf))]
-
-        anchor = occupied[self._rng.integers(len(occupied))]
-        neighs = self.neighs_id(anchor)
-        if not neighs:
-            return anchor
-        return neighs[self._rng.integers(len(neighs))]
-
-    def _try_settle(self, cell_id: str, group: int) -> bool:
-        """
-        Attempt to settle ``group`` on ``cell_id``, following the
-        thesis' eviction rules.
-
-        If settlement displaces an occupant, the displaced agent's group
-        is pushed back onto ``self._pending`` directly (it re-enters the
-        pool to find a new place, exactly as in the thesis: "the latter
-        is 'evicted' and must find another place to settle").
-
-        Returns
-        -------
-        bool
-            True if the agent settled successfully, False if it must
-            remain pending and try again.
-        """
-        current = self.society[cell_id].group
-
-        if group == RED:
-            can_settle = True  # red can settle anywhere
-        elif group == YELLOW:
-            can_settle = current != RED  # anywhere except on red
-        else:  # BLUE
-            can_settle = current == EMPTY  # only on empty cells
-
-        if not can_settle:
-            return False
-
-        if current != EMPTY:
-            self._pending.append(current)  # evicted agent re-enters the pool
-
-        self.society[cell_id].group = group
-        return True
+    def _local_density(self, groups: np.ndarray) -> np.ndarray:
+        """Vectorised: fraction of Queen-neighbors occupied for each cell."""
+        # Append a padding 0 so index -1 (unused slots in neigh_mat) → 0
+        occ = np.empty(len(groups) + 1, dtype=np.float32)
+        occ[:-1] = (groups != EMPTY).astype(np.float32)
+        occ[-1] = 0.0
+        neigh_occ = occ[self._neigh_mat]          # (n, max_k)
+        valid = (self._neigh_mat >= 0).astype(np.float32)  # (n, max_k)
+        density = (neigh_occ * valid).sum(axis=1) / np.maximum(self._neigh_cnt, 1)
+        return density
 
     def _update_tracked_counts(self) -> None:
-        gdf = self.gdf
-        self.red = int((gdf["group"] == RED).sum())
-        self.yellow = int((gdf["group"] == YELLOW).sum())
-        self.blue = int((gdf["group"] == BLUE).sum())
-        self.pending = len(self._pending)
+        self.red = self._count[RED]
+        self.yellow = self._count[YELLOW]
+        self.blue = self._count[BLUE]
+        self.pending = len(self._q_red) + len(self._q_yellow) + len(self._q_blue)
 
     # ------------------------------------------------------------------
     # Convenience metrics
     # ------------------------------------------------------------------
 
     def occupied_fraction(self) -> float:
-        """Fraction of grid cells currently occupied by any group."""
         n = len(self.gdf)
-        if n == 0:
-            return 0.0
-        return (self.red + self.yellow + self.blue) / n
+        return 0.0 if n == 0 else (self.red + self.yellow + self.blue) / n
 
     def is_done(self) -> bool:
-        """Whether every agent has successfully settled."""
-        return len(self._pending) == 0
+        return self.pending == 0
 
 
 __all__ = ["PeripherisationModel", "EMPTY", "RED", "YELLOW", "BLUE"]

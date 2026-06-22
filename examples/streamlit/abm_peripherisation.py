@@ -1,8 +1,10 @@
 """
 Peripherisation Model — Streamlit
 ====================================
-The Peripherisation Model (Barros and Alves Jr., 2003), from Joana
-Barros' PhD thesis "Urban Growth in Latin American Cities" (UCL, 2004).
+The Peripherisation Model (Barros and Alves Jr., 2003), ported from the
+TerraME/Lua implementation.  Settlement is density-based: high and middle
+income settle on the cell closest to the existing core; low income is
+restricted to low-density peripheral cells and banned from the dense core.
 
 Usage
 -----
@@ -18,21 +20,14 @@ from dissmodel.geo.vector import vector_grid
 from dissmodel.visualization import Map, Chart
 from dissmodel_abm.models import PeripherisationModel
 
-# ---------------------------------------------------------------------------
-# Page config
-# ---------------------------------------------------------------------------
 st.set_page_config(page_title="Peripherisation Model", layout="centered")
 st.title("Peripherisation Model (dissmodel-abm)")
-st.caption(
-    "Barros and Alves Jr. (2003) — Joana Barros' PhD thesis, "
-    "\"Urban Growth in Latin American Cities\" (UCL, 2004)"
-)
+st.caption("Barros and Alves Jr. (2003) — Lua/TerraME variant")
 st.markdown(
-    "Three economic groups settle on a grid, all preferring proximity to "
-    "**red** (high-income) cells. **Red** can settle anywhere, **yellow** "
-    "(middle-income) anywhere except on red, and **blue** (low-income) only "
-    "on empty cells — producing the core-periphery pattern typical of Latin "
-    "American urban segregation."
+    "**Red** (high) and **yellow** (middle income) settle on the empty cell "
+    "closest to the existing settlement core. **Blue** (low income) is "
+    "restricted to low-density peripheral cells and expelled from the dense "
+    "core — producing the concentric-ring pattern observed in Latin American cities."
 )
 
 # ---------------------------------------------------------------------------
@@ -40,10 +35,13 @@ st.markdown(
 # ---------------------------------------------------------------------------
 st.sidebar.title("Parameters")
 
-dim       = st.sidebar.slider("Grid dimension", min_value=11, max_value=61, value=31, step=2)
-n_agents  = st.sidebar.slider("Number of agents", min_value=10, max_value=2000, value=900)
-steps     = st.sidebar.slider("Walk steps per settlement attempt", min_value=1, max_value=10, value=2)
-agents_per_step = st.sidebar.slider("Agents processed per tick", min_value=1, max_value=50, value=10)
+dim             = st.sidebar.slider("Grid dimension", 11, 61, 31, step=2)
+n_agents        = st.sidebar.slider("Number of agents", 10, 2000, 900)
+agents_per_step = st.sidebar.slider("Agents processed per tick", 1, 50, 5)
+
+st.sidebar.subheader("Density thresholds")
+low_dens    = st.sidebar.slider("Low-density threshold (blue max)", 0.1, 0.9, 0.4, step=0.05)
+centro_dens = st.sidebar.slider("Centro threshold (blue ban above)", 0.1, 0.9, 0.9, step=0.05)
 
 st.sidebar.subheader("Proportion of agents per group")
 pct_red    = st.sidebar.slider("Red (high income) %", 1, 50, 10)
@@ -51,8 +49,8 @@ pct_yellow = st.sidebar.slider("Yellow (middle income) %", 1, 80, 40)
 pct_blue   = max(0, 100 - pct_red - pct_yellow)
 st.sidebar.caption(f"Blue (low income): {pct_blue}%")
 
-end_time = st.sidebar.slider("Max simulation ticks", min_value=100, max_value=5000, value=1500, step=100)
-seed = st.sidebar.number_input("Random seed", min_value=0, value=3, step=1)
+end_time = st.sidebar.slider("Max simulation ticks", 100, 5000, 1500, step=100)
+seed     = st.sidebar.number_input("Random seed", min_value=0, value=3, step=1)
 
 run = st.button("Run Simulation")
 
@@ -60,26 +58,21 @@ run = st.button("Run Simulation")
 # Setup
 # ---------------------------------------------------------------------------
 gdf = vector_grid(dimension=(dim, dim), resolution=1)
-
 env = Environment(start_time=0, end_time=end_time)
-
 proportions = (pct_red / 100, pct_yellow / 100, pct_blue / 100)
 
 model = PeripherisationModel(
     gdf=gdf,
-    steps=steps,
     proportions=proportions,
     n_agents=n_agents,
     agents_per_step=agents_per_step,
+    low_density_threshold=low_dens,
+    centro_density_threshold=centro_dens,
     seed=seed,
 )
 
-# PeripherisationModel.red / .yellow / .blue / .pending are registered
-# via @track_plot, so Chart() below picks them up automatically — same
-# convention as dissmodel-sysdyn's SIR model.
-
 # ---------------------------------------------------------------------------
-# Visualization: map (white=empty, red, yellow, blue) + population chart
+# Visualization
 # ---------------------------------------------------------------------------
 cmap = ListedColormap(["white", "tab:red", "gold", "tab:blue"])
 
@@ -120,4 +113,4 @@ if run:
     if model.is_done():
         st.success(f"All {n_agents} agents settled.")
     else:
-        st.info(f"{model.pending} agents still pending — increase max ticks to let them settle.")
+        st.info(f"{model.pending} agents still pending — increase max ticks.")
