@@ -39,11 +39,11 @@ never from `numpy.random` or `random`, and two runs with the same seed and
 code give the same bands. With `seed=None`, the seed actually used is kept
 in `model.seed_used`.
 
-**Derived bands.** A TerraME cell attribute defined as a function
-(`Cell{state = function(cell) ... end}`) becomes
-`cs.add_derived_band("state", fn)`. The model recomputes derived bands after
-`setup()` and after each step (`post_execute`). A subclass that overrides
-`post_execute` must call `super().post_execute()`.
+**Bands computed from cells.** A TerraME cell attribute defined as a
+function (`Cell{state = function(cell) ... end}`) becomes an agent band or a
+derived band (see below). The model recomputes both after `setup()` and
+after each step (`post_execute`). A subclass that overrides `post_execute`
+must call `super().post_execute()`.
 
 ## CellSpace and Cell
 
@@ -63,12 +63,63 @@ Coordinates follow TerraME: `x` is the column, `y` the row, both from 0,
 and `cs.get(x, y)` returns the cell. The band `n_agents` is kept by every
 cell space with the number of agents in each cell.
 
+**Agent bands and derived bands.** Bands that show the agents, for drawing
+or for cell rules, are declared once:
+
+```python
+# PredatorPrey: who is in each cell
+cs.add_agent_band("who", lambda cell: WOLF if cell.agent.name == "wolf" else RABBIT,
+                  empty=EMPTY)
+# Ants: the land cover, with the ants drawn over it
+cs.add_agent_band("view", lambda cell: ANT, background="cover")
+```
+
+`add_agent_band` calls the function only for the cells that have agents and
+fills the rest with `empty` (or copies the band `background`) in NumPy, so
+it costs the same on a 50 × 50 grid and on a 3000 × 3000 one.
+`add_derived_band(name, fn)` calls `fn` for every cell, in Python: use it
+only for small spaces (it takes about 8 s per step at 1000 × 1000).
+
 **Neighborhood.** `cs.create_neighborhood(strategy="moore", wrap=False,
 include_self=False)`, with TerraME's defaults; `strategy="vonneumann"` gives
 the four cells that share an edge. `cell.neighborhood` lists the neighbors
 in TerraME's order (rows from `dy = -1` to `1`, columns from `dx = -1` to
 `1`), so a loop that stops at the first match behaves like
 `forEachNeighbor` with `return false`.
+
+## Cell rules and cellular automata
+
+Rules that apply to every cell, such as pasture regrowth or evaporation,
+are best written as in `dissmodel-ca`: with NumPy over the whole band, in
+the model's `execute()` (as `PredatorPrey.regrow` and `Ants.evaporate`), or
+as a `dissmodel.geo.RasterCellularAutomaton` that shares the backend:
+
+```python
+backend = RasterBackend(shape=(100, 100))
+fire = FireModel(backend=backend)          # dissmodel-ca, unchanged
+brigade = Brigade(backend=backend)         # an AgentModel with CellSpace(backend)
+```
+
+Both models read and write the same arrays; in each step the environment
+runs them in the order they were created, and each one sees what the
+previous one wrote. `RasterCellularAutomaton` replaces the arrays of the
+bands it returns at every step; cells look the array up on each access, so
+they always see the current one. `examples/cli/fire_brigade.py` runs
+firefighters against the fire of `dissmodel-ca` this way.
+
+## Cost on large grids
+
+The cost of a step follows the number of agents and the cells around them,
+not the size of the grid: `Cell` objects are created only when an agent or
+the model reaches them, and placement (`model.place`), `cs.sample()`,
+`cs.sample_empty()`, `cs.count_empty()` and agent bands work on NumPy
+indices. With 1000 agents walking on a 1000 × 1000 grid, setup takes
+0.04 s and a step about 18 ms (Python 3.11).
+
+Two things still visit every cell in Python and are meant for small spaces:
+iterating the space (`for cell in cs`, `Trajectory`, `cs.empty_cells()`) and
+`add_derived_band`. `cs.n_cells_created` tells how many cells a model has
+created, which is a quick way to find such a loop.
 
 ## Agent
 

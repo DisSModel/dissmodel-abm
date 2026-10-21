@@ -16,8 +16,10 @@ three adaptations to Python and to the DisSModel ecosystem:
   gives the same run, byte for byte.
 - **Cells are raster bands.** Agents read and write cells one at a time
   (`cell.cover = FOOD`); cell rules can update the same bands with NumPy
-  in one operation; `RasterMap` draws them; a `RasterBackend` read from a
-  GeoTIFF or built by DisSCube can be the space.
+  in one operation, or run as a `dissmodel-ca` cellular automaton on the
+  same backend; `RasterMap` draws them; a `RasterBackend` read from a
+  GeoTIFF or built by DisSCube can be the space. The cost of a step follows
+  the number of agents, not the size of the grid.
 
 Status: version 0.2.0, alpha. The raster space is the only one for now; a
 vector space (polygons from a `GeoDataFrame`) is planned behind the same
@@ -79,7 +81,7 @@ cell after every step, ready for `RasterMap(backend=model.cs.backend, band="n_ag
 | `init = function(agent)` | `def init(self)` |
 | `Society{instance = ag, quantity = n}` | `Society(Rabbit, quantity=n)` |
 | `CellularSpace{xdim = n}` | `CellSpace.grid(n)` or `CellSpace(raster_backend)` |
-| `Cell{state = function(cell) ... end}` | `cs.add_derived_band("state", fn)` |
+| `Cell{state = function(cell) ... end}` | `cs.add_agent_band("state", fn)` (or `add_derived_band`) |
 | `cs:createNeighborhood{wrap = true}` | `cs.create_neighborhood(wrap=True)` |
 | `Environment{cs, soc}:createPlacement{}` | `self.place(soc, cellspace=cs)` |
 | `agent:getCell()` | `agent.cell` |
@@ -120,6 +122,11 @@ original defaults:
 python examples/cli/run_logo.py schelling --seed 3
 streamlit run examples/streamlit/logo_explorer.py
 ```
+
+`examples/cli/fire_brigade.py` shows agents and a cellular automaton
+together: firefighters against the forest fire of
+[`dissmodel-ca`](https://github.com/DisSModel/dissmodel-ca), on one shared
+backend.
 
 ### How the ports were checked
 
@@ -175,10 +182,12 @@ src/dissmodel_abm/
 └── models/            # ports of TerraME logo
 examples/
 ├── cli/run_logo.py
+├── cli/fire_brigade.py   # agents + a dissmodel-ca automaton on one backend
 └── streamlit/logo_explorer.py
 tests/
 ├── test_core.py
 ├── test_network.py
+├── test_cellspace_scale.py
 └── test_models.py
 ```
 
@@ -199,6 +208,12 @@ pip install -e ".[dev]"
 pytest
 ```
 
+## Citation
+
+If you use dissmodel-abm, please cite it with the metadata in
+[`CITATION.cff`](CITATION.cff) (GitHub shows it under "Cite this
+repository").
+
 ## License
 
-MIT
+MIT; see [`LICENSE`](LICENSE).

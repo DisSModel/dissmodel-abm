@@ -30,7 +30,7 @@ import math
 import numpy as np
 
 from dissmodel.visualization import track_plot
-from dissmodel_abm.core import Agent, AgentModel, CellSpace, Group, Society, Trajectory
+from dissmodel_abm.core import Agent, AgentModel, CellSpace, Group, Society
 
 #: Codes of the ``state`` band.
 FREE, BRAZIL, GERMANY = 0, 1, 2
@@ -84,10 +84,8 @@ class Schelling(AgentModel):
         self.society = Society(Resident, quantity=math.floor(dim * dim * (1.0 - free_space)))
         self.place(self.society, cellspace=self.cs)
 
-        self.cs.add_derived_band(
-            "state",
-            lambda cell: _CODES[cell.agent.state] if cell.agent is not None else FREE,
-            dtype=np.int8,
+        self.cs.add_agent_band(
+            "state", lambda cell: _CODES[cell.agent.state], empty=FREE, dtype=np.int8
         )
         self.unhappy_agents = Group(self.society, select=lambda a: a.is_unhappy(self.preference))
         self.unhappy = self.percent_unhappy()
@@ -96,8 +94,9 @@ class Schelling(AgentModel):
         self.unhappy_agents.filter()
         if len(self.unhappy_agents) > 0:
             agent = self.unhappy_agents.sample()
-            empty_cells = Trajectory(self.cs, select=lambda cell: cell.is_empty())
-            agent.move(empty_cells.sample())
+            # The original builds Trajectory{select = isEmpty} and samples it;
+            # sample_empty() draws the same cell without visiting every cell.
+            agent.move(self.cs.sample_empty())
         self.unhappy = 100.0 * len(self.unhappy_agents) / len(self.society)
 
     def percent_unhappy(self) -> float:

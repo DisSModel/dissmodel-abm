@@ -124,7 +124,7 @@ class PredatorPrey(AgentModel):
         self.wolf_society = Society(Wolf, quantity=wolves)
         self.place(self.rabbit_society, self.wolf_society, cellspace=self.cs)
 
-        self.cs.add_derived_band("who", _who, dtype=np.int8)
+        self.cs.add_agent_band("who", _who, empty=EMPTY, dtype=np.int8)
         self._count()
 
     def regrow(self) -> None:
@@ -149,10 +149,8 @@ class PredatorPrey(AgentModel):
 
 
 def _who(cell) -> int:
-    agent = cell.agent
-    if agent is None:
-        return EMPTY
-    return WOLF if agent.name == "wolf" else RABBIT
+    """Code of the first agent of an occupied cell (the original ``who``)."""
+    return WOLF if cell.agent.name == "wolf" else RABBIT
 
 
 __all__ = [

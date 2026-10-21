@@ -150,31 +150,36 @@ class AgentModel(Model):
         if strategy == "void":
             return
 
-        cells = list(cellspace)
+        # Work on flat cell indices, in row order, and create Cell objects
+        # only for the cells that receive agents: placing 1000 agents costs
+        # the same in a 50 x 50 space and in a 3000 x 3000 one.
+        valid = cellspace._valid_idx
+        n_cells = len(valid)
         if strategy in ("random", "spread"):
             if max < 1:
                 raise ValueError("Argument 'max' must be positive.")
-            if len(agents) > len(cells) * max:
+            if len(agents) > n_cells * max:
                 raise ValueError("It is not possible to put such amount of agents in space.")
 
         if strategy == "random":
-            cells = [cells[i] for i in self.rng.permutation(len(cells))]
+            cells = valid[self.rng.permutation(n_cells)]
             agents = [agents[i] for i in self.rng.permutation(len(agents))]
             for k, agent in enumerate(agents):
-                agent.enter(cells[k // max])
+                agent.enter(cellspace._cell_at(int(cells[k // max])))
         elif strategy == "uniform":
             for k, agent in enumerate(agents):
-                agent.enter(cells[k % len(cells)])
+                agent.enter(cellspace._cell_at(int(valid[k % n_cells])))
         elif strategy == "spread":
             agents = [agents[i] for i in self.rng.permutation(len(agents))]
-            free = cells[:]
+            free = valid.copy()
+            n_free = n_cells
             for agent in agents:
-                i = int(self.rng.integers(len(free)))
-                cell = free[i]
+                i = int(self.rng.integers(n_free))
+                cell = cellspace._cell_at(int(free[i]))
                 agent.enter(cell)
                 if len(cell.agents) >= max:
-                    free[i] = free[-1]
-                    free.pop()
+                    free[i] = free[n_free - 1]
+                    n_free -= 1
         else:
             raise ValueError(
                 f"Unknown strategy {strategy!r}; use 'random', 'uniform', 'spread' or 'void'."

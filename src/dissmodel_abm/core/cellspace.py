@@ -16,7 +16,8 @@ TerraME                               dissmodel-abm
 ``cs:get(x, y)``                      ``cs.get(x, y)``
 ``cs:sample()``                       ``cs.sample()``
 ``cs:createNeighborhood{...}``        ``cs.create_neighborhood(...)``
-``Cell{state = function(cell) end}``  ``cs.add_derived_band("state", fn)``
+``Cell{state = function(cell) end}``  ``cs.add_agent_band("state", fn)`` or
+                                      ``cs.add_derived_band("state", fn)``
 ``forEachCell(cs, f)``                ``for cell in cs: ...``
 ``forEachNeighbor(cell, f)``          ``for neigh in cell.neighborhood: ...``
 ``cell:getNeighborhood():sample()``   ``cell.neighborhood.sample()``
@@ -27,12 +28,22 @@ TerraME                               dissmodel-abm
 
 Coordinates follow TerraME: ``x`` is the column and ``y`` the row, both
 starting at 0, with ``y = 0`` the first row of the array.
+
+Cost
+----
+Agents create the ``Cell`` objects they touch, and nothing else does:
+placement, ``sample()``, ``sample_empty()`` and agent bands work on NumPy
+indices, so their cost follows the number of agents, not the size of the
+grid. Two operations still visit every cell in Python and are meant for
+small spaces: iterating the space (``for cell in cs``, ``Trajectory``) and
+``add_derived_band``. Rules that apply to every cell (regrowth, diffusion,
+evaporation) are best written with NumPy over the whole band, or as a
+``dissmodel.geo.RasterCellularAutomaton`` sharing the same backend.
 """
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
-from collections.abc import Callable
 
 import numpy as np
 
@@ -62,10 +73,14 @@ class Cell:
     is a valid identity test.
     """
 
-    __slots__ = ("_cs", "x", "y", "id", "agents")
+    __slots__ = ("_cs", "_arrays", "x", "y", "id", "agents")
 
     def __init__(self, cs: CellSpace, x: int, y: int) -> None:
         object.__setattr__(self, "_cs", cs)
+        # The backend's dict of bands. Models such as RasterCellularAutomaton
+        # replace the arrays in it at every step, so a cell keeps the dict and
+        # looks the array up on each access.
+        object.__setattr__(self, "_arrays", cs.backend.arrays)
         object.__setattr__(self, "x", x)
         object.__setattr__(self, "y", y)
         object.__setattr__(self, "id", y * cs.xdim + x)
@@ -75,28 +90,25 @@ class Cell:
 
     def __getattr__(self, name: str) -> Any:
         # Only called when normal lookup fails, i.e. for band names.
-        if name.startswith("__"):
-            raise AttributeError(name)
-        cs = object.__getattribute__(self, "_cs")
-        arr = cs.backend.arrays.get(name)
-        if arr is None:
+        try:
+            return self._arrays[name].item(self.y, self.x)
+        except KeyError:
+            if name.startswith("__"):
+                raise AttributeError(name) from None
             raise AttributeError(
                 f"Cell has no attribute {name!r}: there is no band {name!r} "
-                f"in the CellSpace (bands: {sorted(cs.backend.arrays)})."
-            )
-        if arr.ndim != 2:
+                f"in the CellSpace (bands: {sorted(self._arrays)})."
+            ) from None
+        except ValueError:
             raise TypeError(
-                f"Band {name!r} is temporal; read it with "
-                f"cs.backend.get({name!r}, time=...)."
-            )
-        value = arr[self.y, self.x]
-        return value.item() if isinstance(value, np.generic) else value
+                f"Band {name!r} is temporal; read it with cs.backend.get({name!r}, time=...)."
+            ) from None
 
     def __setattr__(self, name: str, value: Any) -> None:
-        if name in Cell.__slots__:
-            raise AttributeError(f"Cell attribute {name!r} is read-only.")
-        arr = self._cs.backend.arrays.get(name)
+        arr = self._arrays.get(name)
         if arr is None:
+            if name in Cell.__slots__:
+                raise AttributeError(f"Cell attribute {name!r} is read-only.")
             raise AttributeError(
                 f"Cannot set {name!r}: there is no band {name!r}. "
                 f"Create it first with cs.add_band({name!r}, ...)."
@@ -205,10 +217,15 @@ class CellSpace:
         self._valid = (
             np.ones(backend.shape, dtype=bool) if mask is None else np.asarray(mask, dtype=bool)
         )
-        self._cells: list[Cell | None] = [None] * (self.xdim * self.ydim)
+        # Flat indices (y * xdim + x) of the valid cells, row by row: the
+        # order of iteration, placement and sampling.
+        self._valid_idx = np.flatnonzero(self._valid)
+        self._cells: dict[int, Cell] = {}
+        self._occupied: dict[int, Cell] = {}
         self._neighs: dict[int, Neighborhood] = {}
         self._neigh_spec: tuple[str, bool, bool] | None = None
-        self._derived: dict[str, tuple[Callable[[Cell], Any], Any]] = {}
+        self._derived: dict[str, Callable[[Cell], Any]] = {}
+        self._agent_bands: dict[str, tuple[Callable[[Cell], Any], Any, str | None]] = {}
 
         backend.set(OCCUPANCY_BAND, np.zeros(backend.shape, dtype=np.int32))
 
@@ -251,6 +268,43 @@ class CellSpace:
         self.backend.set(name, arr)
         return self.backend.arrays[name]
 
+    def add_agent_band(
+        self,
+        name: str,
+        fn: Callable[[Cell], Any],
+        empty: Any = 0,
+        background: str | None = None,
+        dtype: Any = np.int32,
+    ) -> None:
+        """
+        Declare a band that shows the agents: ``fn(cell)`` on the cells that
+        have agents, ``empty`` (or the band ``background``) elsewhere.
+
+        This is the scalable form of TerraME's
+        ``Cell{state = function(cell) ... end}`` when the value depends on the
+        agents in the cell. :meth:`refresh` (called by ``AgentModel`` after
+        setup and after every step) fills the band with NumPy and then calls
+        ``fn`` only for the occupied cells, so its cost follows the number of
+        agents, not the size of the grid.
+
+        Parameters
+        ----------
+        fn : callable
+            Value of an occupied cell, such as
+            ``lambda cell: WOLF if cell.agent.name == "wolf" else RABBIT``.
+        empty : scalar
+            Value of the cells without agents.
+        background : str, optional
+            Name of a band copied to the cells without agents instead of
+            ``empty``, to draw agents over a cell attribute (for example the
+            land cover under the ants).
+        """
+        if background is not None and background not in self.backend.arrays:
+            raise ValueError(f"There is no band {background!r} to use as background.")
+        self._agent_bands[name] = (fn, empty, background)
+        self.backend.set(name, np.full(self.backend.shape, empty, dtype=dtype))
+        self._refresh_agent_band(name)
+
     def add_derived_band(
         self,
         name: str,
@@ -259,25 +313,40 @@ class CellSpace:
         fill: Any = 0,
     ) -> None:
         """
-        Declare a band computed from each cell, such as TerraME's
+        Declare a band computed from every cell, as TerraME's
         ``Cell{state = function(cell) ... end}``.
 
-        The band is recomputed by :meth:`refresh`, which ``AgentModel`` calls
-        after setup and after every step. Cells outside the mask get ``fill``.
+        :meth:`refresh` calls ``fn`` for every valid cell in Python, which is
+        fine for small spaces (0.5 s per step at 250 × 250) but not for large
+        ones (8 s per step at 1000 × 1000). Prefer :meth:`add_agent_band`
+        when the value depends on the agents, or compute the band with NumPy
+        in the model's ``execute``. Cells outside the mask get ``fill``.
         """
-        self._derived[name] = (fn, dtype)
+        self._derived[name] = fn
         self.backend.set(name, np.full(self.backend.shape, fill, dtype=dtype))
         self._refresh_band(name)
 
     def refresh(self) -> None:
-        """Recompute every derived band."""
+        """Recompute the agent bands and the derived bands."""
+        for name in self._agent_bands:
+            self._refresh_agent_band(name)
         for name in self._derived:
             self._refresh_band(name)
 
     def _refresh_band(self, name: str) -> None:
-        fn, _ = self._derived[name]
+        fn = self._derived[name]
         arr = self.backend.arrays[name]
         for cell in self:
+            arr[cell.y, cell.x] = fn(cell)
+
+    def _refresh_agent_band(self, name: str) -> None:
+        fn, empty, background = self._agent_bands[name]
+        arr = self.backend.arrays[name]
+        if background is None:
+            arr[...] = empty
+        else:
+            arr[...] = self.backend.arrays[background]
+        for cell in self._occupied.values():
             arr[cell.y, cell.x] = fn(cell)
 
     # -- cells -----------------------------------------------------------------
@@ -287,31 +356,61 @@ class CellSpace:
         if not (0 <= x < self.xdim and 0 <= y < self.ydim) or not self._valid[y, x]:
             return None
         i = y * self.xdim + x
-        cell = self._cells[i]
+        cell = self._cells.get(i)
         if cell is None:
             cell = Cell(self, x, y)
             self._cells[i] = cell
         return cell
 
+    def _cell_at(self, i: int) -> Cell:
+        """The cell with flat index ``i``, which must be valid."""
+        cell = self._cells.get(i)
+        if cell is None:
+            cell = Cell(self, i % self.xdim, i // self.xdim)
+            self._cells[i] = cell
+        return cell
+
     def __iter__(self) -> Iterator[Cell]:
-        """Valid cells, row by row (TerraME ``forEachCell``)."""
-        for y, x in zip(*np.nonzero(self._valid), strict=True):
-            yield self.get(int(x), int(y))  # type: ignore[misc]
+        """
+        Valid cells, row by row (TerraME ``forEachCell``).
+
+        Creates a ``Cell`` for every valid cell: fine for small spaces, slow
+        for large ones (see the module notes).
+        """
+        for i in self._valid_idx.tolist():
+            yield self._cell_at(i)
 
     def __len__(self) -> int:
-        return int(self._valid.sum())
+        return len(self._valid_idx)
 
     def sample(self) -> Cell:
         """A valid cell chosen at random."""
-        ys, xs = np.nonzero(self._valid)
-        i = int(self.rng.integers(len(xs)))
-        return self.get(int(xs[i]), int(ys[i]))  # type: ignore[return-value]
+        i = int(self.rng.integers(len(self._valid_idx)))
+        return self._cell_at(int(self._valid_idx[i]))
+
+    def _empty_idx(self) -> np.ndarray:
+        occ = self.backend.arrays[OCCUPANCY_BAND]
+        return np.flatnonzero(self._valid & (occ == 0))
+
+    def sample_empty(self) -> Cell | None:
+        """
+        A valid cell without agents, chosen at random, or ``None``.
+
+        Draws the same cell as ``Trajectory(cs, select=lambda c:
+        c.is_empty()).sample()`` but without visiting every cell in Python.
+        """
+        idx = self._empty_idx()
+        if len(idx) == 0:
+            return None
+        return self._cell_at(int(idx[int(self.rng.integers(len(idx)))]))
+
+    def count_empty(self) -> int:
+        """Number of valid cells without agents."""
+        return len(self._empty_idx())
 
     def empty_cells(self) -> list[Cell]:
-        """Valid cells with no agent."""
-        occ = self.backend.arrays[OCCUPANCY_BAND]
-        ys, xs = np.nonzero(self._valid & (occ == 0))
-        return [self.get(int(x), int(y)) for y, x in zip(ys, xs, strict=True)]  # type: ignore[misc]
+        """Valid cells with no agent, row by row (one ``Cell`` per empty cell)."""
+        return [self._cell_at(i) for i in self._empty_idx().tolist()]
 
     @property
     def occupancy(self) -> np.ndarray:
@@ -376,11 +475,19 @@ class CellSpace:
 
     def _add_agent(self, cell: Cell, agent: Agent) -> None:
         cell.agents.append(agent)
+        self._occupied[cell.id] = cell
         self.backend.arrays[OCCUPANCY_BAND][cell.y, cell.x] += 1
 
     def _remove_agent(self, cell: Cell, agent: Agent) -> None:
         cell.agents.remove(agent)
+        if not cell.agents:
+            del self._occupied[cell.id]
         self.backend.arrays[OCCUPANCY_BAND][cell.y, cell.x] -= 1
+
+    @property
+    def n_cells_created(self) -> int:
+        """Number of ``Cell`` objects created so far (to check the cost of a model)."""
+        return len(self._cells)
 
     def __repr__(self) -> str:
         return f"CellSpace(xdim={self.xdim}, ydim={self.ydim}, bands={sorted(self.backend.arrays)})"
