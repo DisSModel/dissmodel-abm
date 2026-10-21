@@ -16,14 +16,14 @@ import streamlit as st
 
 from dissmodel.core import Environment
 from dissmodel.visualization import Chart, RasterMap
-from dissmodel_abm.models import Ants, LifeCycle, PredatorPrey, Schelling, SingleAgent
+from dissmodel_abm.models import Ants, Disease, LifeCycle, PredatorPrey, Schelling, SingleAgent
 from dissmodel_abm.models import ants, life_cycle, predator_prey, schelling
 
 st.set_page_config(page_title="dissmodel-abm: logo models", layout="wide")
 st.title("TerraME logo models in dissmodel-abm")
 
 name = st.sidebar.selectbox(
-    "Model", ["Schelling", "PredatorPrey", "LifeCycle", "Ants", "SingleAgent"]
+    "Model", ["Schelling", "PredatorPrey", "LifeCycle", "Ants", "Disease", "SingleAgent"]
 )
 seed = int(st.sidebar.number_input("Seed", min_value=0, value=0, step=1))
 
@@ -56,6 +56,14 @@ elif name == "Ants":
         society_size=st.sidebar.slider("society_size", 10, 500, 10),
         rate_evaporation=st.sidebar.slider("rate_evaporation", 0.05, 0.95, 0.2, step=0.05),
     )
+elif name == "Disease":
+    cls, band, colors, labels, final = Disease, None, None, None, 30
+    params = dict(
+        quantity=st.sidebar.slider("quantity", 100, 5000, 1000, step=100),
+        duration=st.sidebar.slider("duration", 0, 10, 2),
+        contacts=st.sidebar.slider("contacts", 1, 20, 6),
+        probability=st.sidebar.slider("probability", 0.05, 1.0, 0.25, step=0.05),
+    )
 else:
     cls, band, colors, labels, final = SingleAgent, "n_agents", {0: "#1a9850", 1: "#000000"}, {0: "empty", 1: "agent"}, 100
     params = dict(
@@ -73,14 +81,15 @@ chart_area = col_chart.empty()
 if st.sidebar.button("Run"):
     env = Environment(start_time=1, end_time=steps)
     model = cls(seed=seed, **params)
-    RasterMap(
-        backend=model.cs.backend,
-        band=band,
-        title=name,
-        color_map=colors,
-        labels=labels,
-        plot_area=map_area,
-    )
+    if band is not None:  # Disease has no space, only the chart
+        RasterMap(
+            backend=model.cs.backend,
+            band=band,
+            title=name,
+            color_map=colors,
+            labels=labels,
+            plot_area=map_area,
+        )
     if getattr(cls, "_plot_info", None):
         Chart(plot_area=chart_area, show_grid=True, title=name)
     env.run()

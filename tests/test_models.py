@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from dissmodel.core import Environment
-from dissmodel_abm.models import Ants, LifeCycle, PredatorPrey, Schelling, SingleAgent
+from dissmodel_abm.models import Ants, Disease, LifeCycle, PredatorPrey, Schelling, SingleAgent
 from dissmodel_abm.models import ants as ants_mod
 from dissmodel_abm.models import predator_prey as pp_mod
 from dissmodel_abm.models import schelling as sch_mod
@@ -29,6 +29,15 @@ def run(cls, steps, seed=0, **params):
 
 def digest(model) -> str:
     h = hashlib.sha256()
+    if not hasattr(model, "cs"):  # models without space: hash the agents' state
+        for agent in model.society:
+            plain = {
+                k: v
+                for k, v in vars(agent).items()
+                if not k.startswith("_") and isinstance(v, (int, float, str, bool))
+            }
+            h.update(repr((agent.id, sorted(plain.items()))).encode())
+        return h.hexdigest()
     arrays = model.cs.backend.arrays
     for name in sorted(arrays):
         h.update(name.encode())
@@ -47,6 +56,7 @@ def digest(model) -> str:
         (PredatorPrey, 15, {"dim": 15}),
         (LifeCycle, 40, {}),
         (Ants, 40, {"dimension": 30}),
+        (Disease, 15, {"quantity": 300}),
     ],
 )
 def test_same_seed_same_state(cls, steps, params):
@@ -186,3 +196,52 @@ def test_ants_first_collection_time_matches_reference_chart():
         data = Ants._plot_info["food"]["data"]
         firsts.append(next(i + 1 for i, v in enumerate(data) if v < 100))
     assert min(firsts) == 8
+
+
+# -- Disease ------------------------------------------------------------------------------------------
+
+
+def test_disease_counters_match_states():
+    m = run(Disease, 12, seed=1, quantity=400)
+    states = [a.state for a in m.society]
+    assert m.susceptible == states.count("susceptible")
+    assert m.infected == states.count("infected")
+    assert m.recovered == states.count("recovered")
+    assert m.susceptible + m.infected + m.recovered == 400
+
+
+def test_disease_each_case_sends_duration_plus_two_rounds():
+    sent: dict[int, int] = {}
+
+    class Counting(Disease):
+        pass
+
+    env = Environment(start_time=1, end_time=30)
+    m = Counting(seed=0, quantity=300)
+    original = type(m.society.agents[0]).message
+
+    def counting_message(self, receiver, **kw):
+        sent[self.id] = sent.get(self.id, 0) + 1
+        return original(self, receiver, **kw)
+
+    type(m.society.agents[0]).message = counting_message
+    try:
+        env.run()
+    finally:
+        type(m.society.agents[0]).message = original
+    recovered = [a.id for a in m.society if a.state == "recovered"]
+    assert recovered
+    assert all(sent[i] == (2 + 2) * 6 for i in recovered)
+
+
+def test_disease_peak_matches_reference_chart():
+    # logo/log/Disease-chart-1.bmp: peak near 650 infected at step 10 (see the
+    # module docstring for the final number of susceptible agents)
+    peaks, steps = [], []
+    for s in range(8):
+        run(Disease, 20, seed=s)
+        data = Disease._plot_info["infected"]["data"]
+        peaks.append(max(data))
+        steps.append(int(np.argmax(data)) + 1)
+    assert 600 < np.median(peaks) < 720
+    assert 9 <= np.median(steps) <= 11

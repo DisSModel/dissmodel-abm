@@ -93,13 +93,17 @@ cell after every step, ready for `RasterMap(backend=model.cs.backend, band="n_ag
 | `Group{target = soc, select = f}`, `group:filter()` | `Group(soc, select=f)`, `group.filter()` |
 | `Trajectory{target = cs, select = f}` | `Trajectory(cs, select=f)` |
 | `soc:myFunction()` (on every agent) | `soc.call("my_function")` |
+| `soc:createSocialNetwork{quantity = 6}` | `soc.create_social_network(quantity=6)` |
+| `forEachConnection(agent, f)` | `for other in agent.connections(): ...` |
+| `agent:message{receiver = b, delay = 1}` | `agent.message(b, delay=1)` |
+| `on_message = function(self, msg)` | `def on_message(self, msg)` |
 
 [`docs/agent.md`](docs/agent.md) describes each piece, the semantics kept
 from TerraME and the places where this package differs.
 
 ## Models ported from TerraME `logo`
 
-Five of the eleven models of [`logo`](https://github.com/TerraME/logo)
+Six of the twelve models of [`logo`](https://github.com/TerraME/logo)
 (version 0.5.6), written to follow the Lua code rule by rule, with the
 original defaults:
 
@@ -110,6 +114,7 @@ original defaults:
 | `PredatorPrey` | two societies, `reproduce`, `die`, a cell rule (pasture regrowth) | 500 |
 | `LifeCycle` | births and deaths by age, agents sharing a cell | 100 |
 | `Ants` | `void` placement, `enter`, bands written by agents, evaporation | 450 |
+| `Disease` | social network redrawn every step, messages with delay; no space | 30 |
 
 ```bash
 python examples/cli/run_logo.py schelling --seed 3
@@ -132,8 +137,10 @@ the port was run over several seeds and compared with it:
 | `LifeCycle`, t = 40 | about 91 agents | 94.5 (20 seeds) |
 | `Ants`, first food taken | t = 8 | t = 8 in 14 of 50 seeds, never earlier |
 | `Ants`, food left at t = 40 | 97 | 90 (50 seeds; 97 or more in 2) |
+| `Disease`, peak of infected | about 650, at t = 10 | 666 at t = 10 (30 seeds) |
+| `Disease`, never infected at t = 30 | about 12 to 17 | 2 (30 seeds; 0 to 7) |
 
-Two findings came out of this comparison:
+Three findings came out of this comparison:
 
 - The `LifeCycle` chart in `logo` (2016) was made with an earlier birth
   rule that placed children only in empty neighbors, and it levels off near
@@ -143,6 +150,12 @@ Two findings came out of this comparison:
   run. Whether this is chance or a difference (the order in which TerraME
   2.0 visited neighbors is the main suspect) needs several runs of the
   original, for example in the `terrame-docker` image.
+- In `Disease`, the peak agrees, but the port leaves fewer agents never
+  infected. The port's number is what the SIR final-size equation gives for
+  four rounds of six messages at probability 0.25 (R0 = 6); the reference
+  would need R0 near 4.5, which would also lower the peak. Neither the code
+  of `logo` nor that of TerraME's `base` package explains the difference, so
+  it also needs several runs of the original.
 
 The ports also keep two details of the original that look like slips:
 `Schelling` defaults to 5 % free space (the help text says 25), and in
@@ -156,7 +169,8 @@ src/dissmodel_abm/
 ├── core/
 │   ├── cellspace.py   # CellSpace, Cell, Neighborhood (raster)
 │   ├── agent.py       # Agent
-│   ├── society.py     # Society, Group, Trajectory
+│   ├── society.py     # Society, Group, Trajectory, social network strategies
+│   ├── network.py     # SocialNetwork, Message
 │   └── model.py       # AgentModel: seed, placement, derived bands
 └── models/            # ports of TerraME logo
 examples/
@@ -164,6 +178,7 @@ examples/
 └── streamlit/logo_explorer.py
 tests/
 ├── test_core.py
+├── test_network.py
 └── test_models.py
 ```
 
@@ -172,9 +187,8 @@ tests/
 - Vector space: `CellSpace` over polygons of a `GeoDataFrame`, with the
   neighborhoods of `dissmodel.geo.vector`.
 - Several named placements per agent (TerraME's `placement` argument).
-- Social networks and messages (`SocialNetwork`, `message`, `on_message`)
-  and the remaining `logo` models (`Disease`, `Sugarscape`, `Heatbugs`,
-  `SpatialPD`, `Labyrinth`, `GrowingSociety`, `Overpopulation`).
+- The remaining `logo` models (`Sugarscape`, `Heatbugs`, `SpatialPD`,
+  `Labyrinth`, `GrowingSociety`, `Overpopulation`).
 - Runs of the original models in `terrame-docker`, over many seeds, to
   compare distributions instead of single charts.
 

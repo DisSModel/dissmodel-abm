@@ -9,7 +9,8 @@ Usage
 
 Steps default to the ``finalTime`` of the original model. The run is
 reproducible: the same ``--seed`` gives the same result, and the last line
-prints a SHA-256 of all bands so that two runs can be compared.
+prints a SHA-256 of the final state (all bands, or the agents' states for
+``disease``, which has no space) so that two runs can be compared.
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ import hashlib
 import numpy as np
 
 from dissmodel.core import Environment
-from dissmodel_abm.models import Ants, LifeCycle, PredatorPrey, Schelling, SingleAgent
+from dissmodel_abm.models import Ants, Disease, LifeCycle, PredatorPrey, Schelling, SingleAgent
 from dissmodel_abm.models import ants, life_cycle, predator_prey, schelling
 
 MODELS = {
@@ -34,11 +35,18 @@ MODELS = {
                    lambda m: f"agents = {m.agents}"),
     "ants": (Ants, 450, "view", ants.COLORS, ants.LABELS,
              lambda m: f"food = {m.food}"),
+    "disease": (Disease, 30, None, None, None,
+                lambda m: f"S = {m.susceptible}, I = {m.infected}, R = {m.recovered}"),
 }
 
 
-def bands_sha256(model) -> str:
+def state_sha256(model) -> str:
+    """SHA-256 of all bands or, for a model without space, of the agents' states."""
     h = hashlib.sha256()
+    if not hasattr(model, "cs"):
+        for agent in model.society:
+            h.update(f"{agent.id}:{agent.state}:{agent.counter}".encode())
+        return h.hexdigest()
     for name, arr in sorted(model.cs.backend.arrays.items()):
         h.update(name.encode())
         h.update(np.ascontiguousarray(arr).tobytes())
@@ -60,6 +68,8 @@ def main() -> None:
     env = Environment(start_time=1, end_time=steps)
     model = cls(seed=args.seed)
 
+    if args.frames and band is None:
+        parser.error(f"{args.model} has no space to draw")
     if args.frames:
         from dissmodel.visualization import RasterMap
 
@@ -74,7 +84,7 @@ def main() -> None:
 
     env.run()
     print(f"{args.model}: {summary(model)} after {steps} steps (seed {args.seed})")
-    print(f"sha256 of the bands: {bands_sha256(model)}")
+    print(f"sha256 of the final state: {state_sha256(model)}")
 
 
 if __name__ == "__main__":
