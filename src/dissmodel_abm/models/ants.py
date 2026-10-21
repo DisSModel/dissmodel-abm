@@ -1,338 +1,293 @@
 """
-dissmodel_abm/models/ants.py
-==============================
-Ant colony foraging model, ported from TerraME's ``logo`` package
-(https://www.terrame.org/package/logo/models/#ants).
+A colony of ants bringing food to their nest.
 
-Original Lua source:
-https://www.terrame.org/package/logo/lua/Ants.lua
+Port of ``Ants`` from TerraME's ``logo`` package (version 0.5.6,
+``lua/Ants.lua``), implemented there by Bernardo Dornellas de Mendonça
+Martins dos Reis after Fesseha Belay and Javier Morata.
 
-Rule
-----
-A square cellular grid holds a single nest cell, a number of food
-cells, and a pheromone (chemical) concentration that evaporates every
-step. A colony of ant agents alternates between two states:
+Rules, as in the original
+-------------------------
+- A nest (the center cell and its eight neighbors) and four food piles (a
+  cell, its neighbors and their neighbors) on a ``dimension`` × ``dimension``
+  space with Moore neighborhood.
+- Each ant starts at one of four cells two steps from the nest center, drawn
+  at random.
+- A **searching** ant first checks its neighbors for food (see below); then
+  moves to the first empty neighbor marked with chemical, in neighborhood
+  order; with no such neighbor, walks one step toward a random destination
+  cell, avoiding food and nest cells and occupied cells.
+- A **bringing** ant first checks its neighbors for the nest; then steps
+  toward the nest center, marking its cell and spreading chemical to its
+  neighbors when the next cell is neither food nor nest. It moves even into
+  an occupied cell.
+- After the ants, every cell with chemical loses ``rate_evaporation``; cells
+  without chemical become empty and cells with less than 1 become
+  ``LESSCHEM``.
 
-- ``"searching"``: if the ant's current cell still has food, it picks
-  up one unit, switches to ``"bringing"``, and deposits a strong dose
-  of pheromone. Otherwise it moves to the neighboring cell with the
-  most pheromone (following the strongest trail it can smell); if no
-  neighbor has any pheromone, it picks a random neighbor instead
-  (an unbiased random walk, exactly like TerraME's
-  ``agent:move(Random(empty):sample())`` in the no-trail case).
-- ``"bringing"``: the ant heads straight back toward the nest, always
-  stepping to whichever neighbor is geometrically closest to it, and
-  depositing pheromone along the way. Reaching the nest counts one
-  unit of food collected and switches the ant back to ``"searching"``.
+A quirk kept from the original
+------------------------------
+``findFood`` and ``findNest`` end with ``return true`` *inside* the function
+passed to ``forEachNeighbor``. ``forEachNeighbor`` stops only when that
+function returns ``false``, so the loop goes on over all neighbors and both
+functions always return ``false``. Consequences, reproduced here: an ant
+next to several food cells takes all of them in one step (and the food
+counter drops by that many), and an ant that finds food or the nest still
+makes the move of the state it was in. :meth:`Ant.find_food` and
+:meth:`Ant.find_nest` follow that behavior.
 
-Pheromone evaporates by a fixed fraction every step
-(``evaporation_rate``), matching TerraME's ``rateEvaporation``.
-
-This is a simplification of the original NetLogo-style "ants" model
-referenced by TerraME's ``logo`` package: pheromone is deposited only
-on the ant's current cell (not splashed onto neighbors), and food is
-scattered as single-unit cells rather than clustered piles. Both are
-deliberate simplifications to keep the port self-contained; see
-``build_colony`` to customize the food layout.
-
-dissmodel-abm mapping
-----------------------
-Like :mod:`dissmodel_abm.models.labyrinth`, the grid cells and the
-moving agents share one ``self.gdf`` / ``self.society``, distinguished
-by the ``kind`` column:
-
-- ``kind="cell"`` — one per grid tile (Polygon). Mutable ``pheromone``
-  (float) and ``food`` (int, units remaining) columns, plus a fixed
-  ``is_nest`` flag.
-- ``kind="ant"``  — the moving agents (Point, placed at the centroid
-  of their current cell), tracked via ``cell_id`` and ``state``
-  (``"searching"`` / ``"bringing"``).
-
-Both kinds carry a ``display_code`` column (see :data:`DISPLAY_CODES`)
-recomputed every step, so a single
-:class:`dissmodel.visualization.Map` can render cells and ants
-together with a stable color scale (numeric column + fixed
-``vmin``/``vmax``, the same technique used by
-:mod:`dissmodel_abm.models.labyrinth` and
-:mod:`dissmodel_abm.models.schelling` to avoid matplotlib rescaling
-the colormap when a category temporarily disappears).
-
-Live plotting
--------------
-``collected`` (cumulative food brought to the nest) and ``foraging``
-(ants currently searching, as opposed to bringing food home) are
-registered via ``@track_plot``, so any
-:class:`dissmodel.visualization.Chart` connected to the same
-``Environment`` plots them automatically — no extra wiring needed,
-same convention used by ``dissmodel-sysdyn``'s ``SIR`` model.
+Defaults: ``dimension = 50``, ``society_size = 10``, ``initial_food = 100``,
+``rate_diffusion = 1``, ``rate_evaporation = 0.2``, ``finalTime = 450``.
 """
 from __future__ import annotations
 
-import geopandas as gpd
+import math
+
 import numpy as np
-from libpysal.weights import Queen
 
-from dissmodel.geo.vector import vector_grid
 from dissmodel.visualization import track_plot
-from dissmodel_abm.core import AgentModel
+from dissmodel_abm.core import Agent, AgentModel, Cell, CellSpace, Society
 
-#: Fixed numeric code for each visual category, used by the
-#: ``display_code`` column. Plotting on this numeric column with
-#: explicit ``vmin=0, vmax=len(DISPLAY_CODES) - 1`` keeps colors stable
-#: across steps, regardless of which categories are actually present
-#: in a given frame.
-DISPLAY_CODES: dict[str, int] = {
-    "empty": 0,
-    "trail_weak": 1,
-    "trail": 2,
-    "food": 3,
-    "nest": 4,
-    "ant": 5,
+#: Codes of the ``cover`` band.
+EMPTY, FOOD, NEST, CHEMICAL, LESSCHEM = 0, 1, 2, 3, 4
+#: Extra code of the ``view`` band: a cell with at least one ant.
+ANT = 5
+
+COLORS = {
+    EMPTY: "#8c510a",
+    FOOD: "#2166ac",
+    NEST: "#d73027",
+    CHEMICAL: "#1a9850",
+    LESSCHEM: "#00441b",
+    ANT: "#ffff33",
+}
+LABELS = {
+    EMPTY: "empty",
+    FOOD: "food",
+    NEST: "nest",
+    CHEMICAL: "chemical",
+    LESSCHEM: "lesschem",
+    ANT: "ant",
 }
 
+_BLOCKED = (FOOD, NEST)
 
-def build_colony(
-    dimension: int = 50,
-    resolution: float = 1.0,
-    n_food_cells: int = 100,
-    seed: int | None = None,
-) -> gpd.GeoDataFrame:
+
+def _toward(cell: Cell, dest: Cell) -> tuple[int, int]:
+    """One step from ``cell`` toward ``dest`` in x and in y (``getNextCoordinateTowardDestiny``)."""
+    x = cell.x + (1 if cell.x < dest.x else -1 if cell.x > dest.x else 0)
+    y = cell.y + (1 if cell.y < dest.y else -1 if cell.y > dest.y else 0)
+    return x, y
+
+
+class Ant(Agent):
+    state: str = "searching"
+    dest: Cell | None = None
+
+    def init(self) -> None:
+        self.state = "searching"
+        self.dest = None
+
+    def execute(self) -> None:
+        if self.state == "searching":
+            self.search_food()
+        elif self.state == "bringing":
+            self.bring_food()
+
+    # -- searching -----------------------------------------------------------
+
+    def find_food(self) -> bool:
+        """Take every food cell around and switch to bringing; always ``False`` (see module notes)."""
+        model = self.model
+        cell = self.cell
+        for neigh in cell.neighborhood:
+            if neigh.cover != FOOD:
+                continue
+            neigh.cover = CHEMICAL
+            for neigh2 in self.cell.neighborhood:
+                if neigh2.cover not in _BLOCKED:
+                    neigh2.cover = CHEMICAL
+                    neigh2.chemical += model.rate_diffusion
+                    for neigh3 in neigh2.neighborhood:
+                        if neigh3.cover not in _BLOCKED:
+                            neigh3.cover = LESSCHEM
+                            neigh3.chemical += model.rate_diffusion / 2
+            self.state = "bringing"
+            model.remaining_food -= 1
+        return False
+
+    def search_food(self) -> None:
+        if self.find_food():
+            return
+
+        any_chem = False
+        for neigh in self.cell.neighborhood:
+            if neigh.cover in (CHEMICAL, LESSCHEM) and neigh.is_empty():
+                self.move(neigh)
+                any_chem = True
+                break
+
+        if not any_chem:
+            if self.dest is None:
+                self.dest = self.model.cs.sample()
+            self.goto_cell()
+
+    def goto_cell(self) -> None:
+        cs = self.model.cs
+        dest = self.dest
+        new_cell = cs.get(*_toward(self.cell, dest))
+
+        if new_cell.cover not in _BLOCKED and new_cell.is_empty():
+            self.move(new_cell)
+        else:
+            new_cell = self.cell.neighborhood.sample()
+            if new_cell.cover not in _BLOCKED and new_cell.is_empty():
+                self.move(new_cell)
+
+        if new_cell is dest:
+            self.dest = None
+
+    # -- bringing --------------------------------------------------------------
+
+    def find_nest(self) -> bool:
+        """Switch to searching when next to the nest; always ``False`` (see module notes)."""
+        for neigh in self.cell.neighborhood:
+            if neigh.cover == NEST:
+                self.state = "searching"
+        return False
+
+    def bring_food(self) -> None:
+        if self.find_nest():
+            return
+
+        model = self.model
+        cell = self.cell
+        new_cell = model.cs.get(*_toward(cell, model.nest_cell))
+
+        if new_cell.cover not in _BLOCKED:
+            cell.cover = CHEMICAL
+            cell.chemical += model.rate_diffusion
+            for neigh in cell.neighborhood:
+                if neigh.cover not in (FOOD, NEST, CHEMICAL):
+                    neigh.chemical += model.rate_diffusion / 2
+                    if 0 < neigh.chemical <= 1:
+                        neigh.cover = LESSCHEM
+                    elif neigh.chemical > 1:
+                        neigh.cover = CHEMICAL
+
+        self.move(new_cell)
+
+    # -- start --------------------------------------------------------------------
+
+    def random_start(self) -> None:
+        start = self.model.start_cells[int(self.rng.integers(4))]
+        self.enter(start)
+
+
+@track_plot("Food", "tab:blue")
+class Ants(AgentModel):
     """
-    Build the grid GeoDataFrame consumed by :class:`AntsModel`.
+    Parameters (``setup``)
+    ----------------------
+    dimension : int
+        Width and height of the space. Default 50.
+    society_size : int
+        Number of ants. Default 10.
+    initial_food : int
+        Initial value of the food counter. Default 100.
+    rate_diffusion : float
+        Chemical deposited by an ant. Default 1.
+    rate_evaporation : float
+        Chemical lost per step by each cell. Default 0.2.
 
-    Creates a square grid with a single nest cell at its center and
-    ``n_food_cells`` single-unit food cells scattered at random.
-
-    Parameters
-    ----------
-    dimension : int, optional
-        Grid width and height, in cells, by default 50 (TerraME's
-        ``dimension``).
-    resolution : float, optional
-        Cell size, by default 1.0.
-    n_food_cells : int, optional
-        Number of cells seeded with one unit of food each, by default
-        100 (TerraME's ``initialFood``).
-    seed : int, optional
-        Random seed for food placement, by default None.
-
-    Returns
-    -------
-    geopandas.GeoDataFrame
-        Polygon grid with ``pheromone``, ``food``, ``is_nest``,
-        ``display_code`` and ``kind="cell"`` columns, ready to pass as
-        ``gdf=`` to :class:`AntsModel`.
-    """
-    grid = vector_grid(dimension=(dimension, dimension), resolution=resolution)
-    grid["kind"] = "cell"
-    grid["pheromone"] = 0.0
-    grid["food"] = 0
-    grid["is_nest"] = False
-
-    nest_id = f"{dimension // 2}-{dimension // 2}"
-    grid.at[nest_id, "is_nest"] = True
-
-    rng = np.random.default_rng(seed)
-    candidates = [idx for idx in grid.index if idx != nest_id]
-    n_food_cells = min(n_food_cells, len(candidates))
-    food_ids = rng.choice(candidates, size=n_food_cells, replace=False)
-    grid.loc[food_ids, "food"] = 1
-
-    grid["display_code"] = DISPLAY_CODES["empty"]
-    grid.loc[grid["food"] > 0, "display_code"] = DISPLAY_CODES["food"]
-    grid.at[nest_id, "display_code"] = DISPLAY_CODES["nest"]
-
-    return grid
-
-
-@track_plot("Foraging", "tab:orange")
-@track_plot("Collected", "tab:green")
-class AntsModel(AgentModel):
-    """
-    Ant colony foraging model.
-
-    Parameters
-    ----------
-    gdf : geopandas.GeoDataFrame
-        Colony grid, from :func:`build_colony` — one ``"cell"`` agent
-        per tile, with ``pheromone``, ``food`` and ``is_nest`` columns.
-    n_ants : int, optional
-        Number of ant agents, starting at the nest, by default 10
-        (TerraME's ``societySize``).
-    evaporation_rate : float, optional
-        Fraction of pheromone lost every step, in ``[0, 1]``, by
-        default 0.2 (TerraME's ``rateEvaporation``).
-    deposit_amount : float, optional
-        Pheromone added to an ant's current cell when it picks up food
-        or while it is bringing food home, by default 5.0.
-    strong_threshold : float, optional
-        Minimum pheromone concentration for a cell to be drawn as a
-        "strong" trail rather than a "weak" (faded) one, by default
-        1.0. Purely cosmetic — does not affect ant behavior.
-    seed : int, optional
-        Random seed for the ants' initial random-walk decisions
-        (the colony layout itself is seeded via :func:`build_colony`),
-        by default None.
-
-    Notes
-    -----
-    Each ant agent (``kind="ant"``) holds ``cell_id`` (the maze cell it
-    currently occupies) and ``state`` (``"searching"`` or
-    ``"bringing"``).
-
-    Examples
-    --------
-    >>> from dissmodel.core import Environment
-    >>> from dissmodel_abm.models.ants import AntsModel, build_colony
-    >>> gdf = build_colony(dimension=30, n_food_cells=40, seed=0)
-    >>> env = Environment(end_time=300)
-    >>> model = AntsModel(gdf=gdf, n_ants=20, seed=0)
-    >>> env.run()  # doctest: +SKIP
+    Bands: ``cover`` (:data:`EMPTY`, :data:`FOOD`, :data:`NEST`,
+    :data:`CHEMICAL`, :data:`LESSCHEM`), ``chemical``, ``view`` (``cover``
+    with :data:`ANT` where there are ants) and ``n_agents``.
     """
 
-    #: Cumulative food units brought to the nest (tracked for live plotting).
-    collected: int = 0
-
-    #: Ants currently searching for food, as opposed to bringing it home
-    #: (tracked for live plotting).
-    foraging: int = 0
+    food: float = 0
 
     def setup(
         self,
-        n_ants: int = 10,
-        evaporation_rate: float = 0.2,
-        deposit_amount: float = 5.0,
-        strong_threshold: float = 1.0,
-        seed: int | None = None,
+        dimension: int = 50,
+        society_size: int = 10,
+        initial_food: int = 100,
+        rate_diffusion: float = 1,
+        rate_evaporation: float = 0.2,
     ) -> None:
-        # Neighborhood must be built while self.gdf only holds the
-        # (polygon) grid cells -- libpysal's Queen contiguity assumes a
-        # homogeneous polygon layer.
-        self.create_neighborhood(strategy=Queen, use_index=True)
+        self.dimension = dimension
+        self.rate_diffusion = rate_diffusion
+        self.rate_evaporation = rate_evaporation
 
-        for col, default in (
-            ("kind", "cell"),
-            ("pheromone", 0.0),
-            ("food", 0),
-            ("is_nest", False),
-            ("display_code", DISPLAY_CODES["empty"]),
-        ):
-            if col not in self.gdf.columns:
-                self.gdf[col] = default
+        self.cs = CellSpace.grid(dimension, cover=np.int8(EMPTY), chemical=0.0)
+        self.cs.create_neighborhood()
 
-        nest_ids = self.gdf.index[self.gdf["is_nest"]].tolist()
-        if not nest_ids:
-            raise ValueError(
-                "Colony grid has no nest cell (set is_nest=True on exactly one cell)."
-            )
-        self.nest_id = nest_ids[0]
+        center = dimension // 2
+        self.nest_cell = self.cs.get(center, center)
+        self.nest_cell.cover = NEST
+        for neigh in self.nest_cell.neighborhood:
+            neigh.cover = NEST
 
-        self.evaporation_rate = evaporation_rate
-        self.deposit_amount = deposit_amount
-        self.strong_threshold = strong_threshold
+        cx, cy = self.nest_cell.x, self.nest_cell.y
+        self.start_cells = [
+            self.cs.get(cx + 2, cy),
+            self.cs.get(cx - 2, cy),
+            self.cs.get(cx, cy - 2),
+            self.cs.get(cx, cy + 2),
+        ]
 
-        nest_point = self.gdf.at[self.nest_id, "geometry"].centroid
-        for _ in range(n_ants):
-            self.society.add(
-                geometry=nest_point,
-                kind="ant",
-                state="searching",
-                cell_id=self.nest_id,
-                display_code=DISPLAY_CODES["ant"],
-            )
+        d = dimension
+        for x, y in ((d / 8, d / 8), (d / 7, d * 3 / 4), (d * 3 / 4, d / 3), (d * 3 / 4, d * 4 / 5)):
+            self._draw_food(x, y)
 
-        self.collected = 0
-        self.foraging = n_ants
+        self.society = Society(Ant, quantity=society_size)
+        self.place(self.society, cellspace=self.cs, strategy="void")
+        self.society.call("random_start")
+
+        self.cs.add_derived_band("view", _view, dtype=np.int8)
+        # Counter changed by the ants (the original ``cs.food``); ``food``
+        # copies it once per step so that the chart gets one point per step.
+        self.remaining_food = initial_food
+        self.food = initial_food
+
+    def _draw_food(self, x: float, y: float) -> None:
+        cell = self.cs.get(math.floor(x), math.floor(y))
+        cell.cover = FOOD
+        for neigh in cell.neighborhood:
+            neigh.cover = FOOD
+            for neigh2 in neigh.neighborhood:
+                neigh2.cover = FOOD
+
+    def evaporate(self) -> None:
+        """Cell rule, vectorized (the ``execute`` of the original cells)."""
+        cover = self.cs.backend.arrays["cover"]
+        chem = self.cs.backend.arrays["chemical"]
+        positive = chem > 0
+        chem[positive] -= self.rate_evaporation
+        marked = (cover == CHEMICAL) | (cover == LESSCHEM)
+        to_empty = (chem <= 0) & marked
+        to_less = ~to_empty & (chem < 1) & (cover == CHEMICAL)
+        cover[to_empty] = EMPTY
+        cover[to_less] = LESSCHEM
 
     def execute(self) -> None:
-        society = self.society
-        ants = society.select(lambda a: a.kind == "ant")
-        rng = np.random.default_rng()
-
-        for ant in ants:
-            if ant.state == "searching":
-                self._search_step(ant, rng)
-            else:
-                self._bring_step(ant, rng)
-
-        # Evaporation, vectorized over every cell at once.
-        cells_mask = self.gdf["kind"] == "cell"
-        pheromone = self.gdf.loc[cells_mask, "pheromone"] * (1 - self.evaporation_rate)
-        pheromone[pheromone < 0.01] = 0.0
-        self.gdf.loc[cells_mask, "pheromone"] = pheromone
-
-        self._update_display_codes(cells_mask)
-
-        self.foraging = society.count(lambda a: a.kind == "ant" and a.state == "searching")
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _search_step(self, ant, rng: np.random.Generator) -> None:
-        cell_id = ant.cell_id
-        if self.gdf.at[cell_id, "food"] > 0:
-            self.gdf.at[cell_id, "food"] -= 1
-            ant.state = "bringing"
-            self._deposit(cell_id)
-            return
-
-        neighbor_ids = list(self.neighs_id(cell_id))
-        if not neighbor_ids:
-            return
-        rng.shuffle(neighbor_ids)
-
-        best = max(neighbor_ids, key=lambda nb: self.gdf.at[nb, "pheromone"])
-        if self.gdf.at[best, "pheromone"] > 0:
-            target = best
-        else:
-            target = neighbor_ids[rng.integers(len(neighbor_ids))]
-
-        self._move_ant(ant, target)
-
-    def _bring_step(self, ant, rng: np.random.Generator) -> None:
-        cell_id = ant.cell_id
-        if cell_id == self.nest_id:
-            ant.state = "searching"
-            self.collected += 1
-            return
-
-        neighbor_ids = list(self.neighs_id(cell_id))
-        if not neighbor_ids:
-            return
-        rng.shuffle(neighbor_ids)
-
-        nest_point = self.gdf.at[self.nest_id, "geometry"].centroid
-        target = min(
-            neighbor_ids,
-            key=lambda nb: self.gdf.at[nb, "geometry"].centroid.distance(nest_point),
-        )
-
-        self._deposit(cell_id)
-        self._move_ant(ant, target)
-
-    def _deposit(self, cell_id) -> None:
-        self.gdf.at[cell_id, "pheromone"] += self.deposit_amount
-
-    def _move_ant(self, ant, target_cell_id) -> None:
-        ant.cell_id = target_cell_id
-        ant.move_to(self.gdf.at[target_cell_id, "geometry"].centroid)
-
-    def _update_display_codes(self, cells_mask) -> None:
-        pheromone = self.gdf.loc[cells_mask, "pheromone"]
-        food = self.gdf.loc[cells_mask, "food"]
-        is_nest = self.gdf.loc[cells_mask, "is_nest"]
-
-        codes = np.full(len(pheromone), DISPLAY_CODES["empty"])
-        codes[(pheromone > 0).to_numpy()] = DISPLAY_CODES["trail_weak"]
-        codes[(pheromone >= self.strong_threshold).to_numpy()] = DISPLAY_CODES["trail"]
-        codes[(food > 0).to_numpy()] = DISPLAY_CODES["food"]
-        # `is_nest` is object-dtype at the column level (the "ant" rows
-        # leave it as NaN, which upcasts the whole Series from bool),
-        # so cast explicitly before using it as a boolean mask.
-        codes[is_nest.astype(bool).to_numpy()] = DISPLAY_CODES["nest"]
-
-        self.gdf.loc[cells_mask, "display_code"] = codes
+        self.society.execute()
+        self.evaporate()
+        self.food = self.remaining_food
 
 
-__all__ = ["AntsModel", "build_colony", "DISPLAY_CODES"]
+def _view(cell: Cell) -> int:
+    return ANT if cell.agents else cell.cover
+
+
+__all__ = [
+    "Ants",
+    "Ant",
+    "EMPTY",
+    "FOOD",
+    "NEST",
+    "CHEMICAL",
+    "LESSCHEM",
+    "ANT",
+    "COLORS",
+    "LABELS",
+]

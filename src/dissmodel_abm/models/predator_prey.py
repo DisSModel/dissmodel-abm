@@ -1,203 +1,171 @@
 """
-dissmodel_abm/models/predator_prey.py
-======================================
-Classic predator-prey (wolf-sheep) agent-based model.
+Predator-prey dynamics: rabbits, wolves and pasture.
 
-Written entirely against :attr:`~dissmodel_abm.core.AgentModel.society`
-(see :mod:`dissmodel_abm.core.society`) — the model never touches
-``self.gdf`` directly. Demonstrates the full set of TerraME-inspired
-operations exposed by :class:`~dissmodel_abm.core.Agent` /
-:class:`~dissmodel_abm.core.Society`:
+Port of ``PredatorPrey`` from TerraME's ``logo`` package (version 0.5.6,
+``lua/PredatorPrey.lua``).
 
-- ``agent.walk()``         — random movement       (TerraME ``Agent:walk``)
-- ``agent.neighbors()``    — spatial neighbor query (TerraME neighborhood)
-- ``agent.die()``          — remove an agent        (TerraME ``Agent:die``)
-- ``agent.reproduce()``    — duplicate an agent      (TerraME ``Agent:reproduce``)
+Rules, as in the original
+-------------------------
+Cells (run first in each step): a ``soil`` cell counts steps and becomes
+``pasture`` again on the fourth.
 
-Agents have the following attributes:
+Rabbits (start with energy 40): look at a random neighbor and move there if
+it is empty; lose 1 energy; eat the pasture of their cell (+20 energy, the
+cell becomes soil); look at another random neighbor and, with energy of 30
+or more and that neighbor empty, give birth there and split their energy
+with the child; die when energy falls below 0.
 
-- ``geometry`` : Point  — position
-- ``kind``     : str    — ``"wolf"`` or ``"sheep"``
-- ``energy``   : float  — depletes each step, replenished by eating
+Wolves (start with energy 40): look at a random neighbor; if it is empty,
+give birth there (energy 50 or more, halving their energy; the child starts
+with 40) or move there; if it holds a rabbit, eat it (+20% of the rabbit's
+energy); lose 4 energy; die when energy falls below 0.
 
-Rules
------
-1. Every agent takes one random walk step.
-2. Every agent loses ``energy_loss`` energy (sheep first graze, if
-   ``graze_gain`` is set).
-3. Wolves within ``eat_radius`` of a sheep eat it: the sheep dies, the
-   wolf gains ``energy_gain``.
-4. Agents with ``energy <= 0`` die.
-5. Agents with ``energy >= reproduce_threshold`` reproduce: a child is
-   created at the same position with ``energy`` reset to
-   ``reproduce_threshold / 2``.
-
-Live plotting
--------------
-``sheep`` and ``wolves`` are registered via ``@track_plot``,
-so any :class:`dissmodel.visualization.Chart` connected to the same
-``Environment`` plots them automatically — no extra wiring needed, same
-convention used by ``dissmodel-sysdyn``'s ``SIR`` model.
+Order in a step: cells, rabbits, wolves. Defaults: ``dim = 30``, 20 rabbits,
+20 wolves, ``finalTime = 500``.
 """
 from __future__ import annotations
 
+import numpy as np
+
 from dissmodel.visualization import track_plot
-from dissmodel_abm.core import AgentModel
-from dissmodel_abm.core.society import Agent
+from dissmodel_abm.core import Agent, AgentModel, CellSpace, Society
+
+#: Codes of the ``state`` band.
+SOIL, PASTURE = 0, 1
+#: Codes of the ``who`` band.
+EMPTY, WOLF, RABBIT = 0, 1, 2
+
+STATE_COLORS = {SOIL: "#8c510a", PASTURE: "#1a9850"}
+STATE_LABELS = {SOIL: "soil", PASTURE: "pasture"}
+WHO_COLORS = {EMPTY: "#ffffff", WOLF: "#d73027", RABBIT: "#4575b4"}
+WHO_LABELS = {EMPTY: "empty", WOLF: "wolf", RABBIT: "rabbit"}
 
 
-@track_plot("Sheep", "tab:blue")
-@track_plot("Wolves", "tab:red")
-class PredatorPreyModel(AgentModel):
-    """
-    Predator-prey (wolf-sheep) agent-based model.
+class Rabbit(Agent):
+    energy: float = 40
+    name = "rabbit"
 
-    Parameters
-    ----------
-    gdf : geopandas.GeoDataFrame
-        GeoDataFrame of agents with columns ``geometry``, ``kind``
-        (``"wolf"`` or ``"sheep"``) and ``energy``.
-    step_size : float, optional
-        Maximum displacement per axis per step, by default 1.0.
-    bounds : tuple of float, optional
-        ``(minx, miny, maxx, maxy)``, by default ``(0, 0, 100, 100)``.
-    eat_radius : float, optional
-        Distance within which a wolf can eat a sheep, by default 1.0.
-    energy_loss : float, optional
-        Energy lost by every agent each step, by default 1.0.
-    energy_gain : float, optional
-        Energy gained by a wolf when it eats a sheep, by default 5.0.
-    reproduce_threshold : float, optional
-        Energy level at which an agent reproduces, by default 15.0.
-    graze_gain : float, optional
-        Energy regained by sheep each step (grazing), by default 0.0.
-        Set to a small positive value (e.g. 0.5-1.0) to allow sheep
-        populations to sustain themselves indefinitely.
-    verbose : bool, optional
-        If True, print population counts (sheep/wolves/total) at the
-        end of each :meth:`execute` call, by default False.
-
-    Examples
-    --------
-    >>> import geopandas as gpd
-    >>> import numpy as np
-    >>> from shapely.geometry import Point
-    >>> from dissmodel.core import Environment
-    >>> from dissmodel_abm.models.predator_prey import PredatorPreyModel
-    >>> n_sheep, n_wolves = 30, 5
-    >>> rng = np.random.default_rng(0)
-    >>> xs = rng.uniform(0, 100, n_sheep + n_wolves)
-    >>> ys = rng.uniform(0, 100, n_sheep + n_wolves)
-    >>> gdf = gpd.GeoDataFrame({
-    ...     "geometry": gpd.points_from_xy(xs, ys),
-    ...     "kind": ["sheep"] * n_sheep + ["wolf"] * n_wolves,
-    ...     "energy": [10.0] * n_sheep + [10.0] * n_wolves,
-    ... })
-    >>> env = Environment(end_time=10)
-    >>> model = PredatorPreyModel(gdf=gdf)
-    >>> env.run()  # doctest: +SKIP
-    """
-
-    #: Current number of sheep agents (tracked for live plotting).
-    sheep: int = 0
-
-    #: Current number of wolf agents (tracked for live plotting).
-    wolves: int = 0
-
-    def setup(
-        self,
-        step_size: float = 1.0,
-        bounds: tuple[float, float, float, float] = (0, 0, 100, 100),
-        eat_radius: float = 1.0,
-        energy_loss: float = 1.0,
-        energy_gain: float = 5.0,
-        reproduce_threshold: float = 15.0,
-        graze_gain: float = 0.0,
-        verbose: bool = False,
-    ) -> None:
-        self.step_size = step_size
-        self.bounds = bounds
-        self.eat_radius = eat_radius
-        self.energy_loss = energy_loss
-        self.energy_gain = energy_gain
-        self.reproduce_threshold = reproduce_threshold
-        self.graze_gain = graze_gain
-        self.verbose = verbose
-
-        # One-time defaults for agents created without these columns.
-        # (Touches self.gdf only here, at setup time, for column
-        # initialization — execute() below uses self.society exclusively.)
-        if "energy" not in self.gdf.columns:
-            self.gdf["energy"] = 10.0
-        if "kind" not in self.gdf.columns:
-            self.gdf["kind"] = "sheep"
+    def eat(self) -> None:
+        cell = self.cell
+        if cell.state == PASTURE:
+            cell.state = SOIL
+            self.energy += 20
 
     def execute(self) -> None:
-        society = self.society
+        cell = self.cell.neighborhood.sample()
+        if cell.is_empty():
+            self.move(cell)
 
-        if len(society) == 0:
-            self.sheep = 0
-            self.wolves = 0
-            if self.verbose:
-                print(f"t={self.env.now():<4.0f} sheep=  0  wolves=  0  total=  0")
-            return
+        self.energy -= 1
+        self.eat()
 
-        # 1. Movement
-        for agent in society:
-            agent.walk(step_size=self.step_size, bounds=self.bounds)
+        cell = self.cell.neighborhood.sample()
+        if self.energy >= 30 and cell.is_empty():
+            child = self.reproduce()
+            child.move(cell)
+            self.energy /= 2
+            child.energy = self.energy
 
-        # 2. Metabolism (sheep graze, everyone loses energy)
-        for agent in society:
-            if self.graze_gain and agent.kind == "sheep":
-                agent.energy += self.graze_gain
-            agent.energy -= self.energy_loss
-
-        # 3. Predation: wolves eat nearby sheep
-        self._predation_step(society)
-
-        # 4. Death
-        society.remove_if(lambda agent: agent.energy <= 0)
-
-        # 5. Reproduction
-        for agent in society.select(lambda a: a.energy >= self.reproduce_threshold):
-            agent.reproduce(energy=self.reproduce_threshold / 2.0)
-
-        # Update tracked counts — picked up automatically by any Chart
-        # connected to the same Environment (see @track_plot above).
-        self.sheep = society.count(lambda a: a.kind == "sheep")
-        self.wolves = society.count(lambda a: a.kind == "wolf")
-
-        if self.verbose:
-            print(
-                f"t={self.env.now():<4.0f} "
-                f"sheep={self.sheep:3d}  wolves={self.wolves:3d}  "
-                f"total={len(society):3d}"
-            )
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _predation_step(self, society) -> None:
-        """Wolves within ``eat_radius`` of a sheep eat it."""
-        wolves = society.select(lambda a: a.kind == "wolf")
-        if not wolves:
-            return
-
-        eaten: set = set()
-
-        for wolf in wolves:
-            sheep_nearby = [
-                prey for prey in wolf.neighbors(self.eat_radius)
-                if prey.id not in eaten and prey.kind == "sheep"
-            ]
-            if sheep_nearby:
-                prey = sheep_nearby[0]
-                eaten.add(prey.id)
-                wolf.energy += self.energy_gain
-
-        for prey_id in eaten:
-            society.remove(prey_id)
+        if self.energy < 0:
+            self.die()
 
 
-__all__ = ["PredatorPreyModel"]
+class Wolf(Agent):
+    energy: float = 40
+    name = "wolf"
+
+    def execute(self) -> None:
+        cell = self.cell.neighborhood.sample()
+
+        if cell.is_empty():
+            if self.energy >= 50:
+                child = self.reproduce()
+                child.move(cell)
+                self.energy /= 2
+            else:
+                self.move(cell)
+        elif cell.agent.name == "rabbit":
+            prey = cell.agent
+            self.energy += prey.energy * 0.2
+            prey.die()
+
+        self.energy -= 4
+
+        if self.energy < 0:
+            self.die()
+
+
+@track_plot("Rabbits", "tab:blue")
+@track_plot("Wolves", "tab:red")
+class PredatorPrey(AgentModel):
+    """
+    Parameters (``setup``)
+    ----------------------
+    dim : int
+        Width and height of the space. Default 30.
+    rabbits, wolves : int
+        Initial populations. Default 20 each.
+
+    Bands: ``state`` (:data:`SOIL`, :data:`PASTURE`), ``count`` (steps as
+    soil), ``who`` (:data:`EMPTY`, :data:`WOLF`, :data:`RABBIT`) and
+    ``n_agents``.
+    """
+
+    #: Current populations (tracked for ``Chart``).
+    rabbits: int = 0
+    wolves: int = 0
+
+    def setup(self, dim: int = 30, rabbits: int = 20, wolves: int = 20) -> None:
+        self.dim = dim
+        self.cs = CellSpace.grid(dim, state=np.int8(PASTURE), count=np.int16(0))
+        self.cs.create_neighborhood()
+
+        self.rabbit_society = Society(Rabbit, quantity=rabbits)
+        self.wolf_society = Society(Wolf, quantity=wolves)
+        self.place(self.rabbit_society, self.wolf_society, cellspace=self.cs)
+
+        self.cs.add_derived_band("who", _who, dtype=np.int8)
+        self._count()
+
+    def regrow(self) -> None:
+        """Cell rule, vectorized: soil turns back into pasture on its fourth step."""
+        state = self.cs.backend.arrays["state"]
+        count = self.cs.backend.arrays["count"]
+        soil = state == SOIL
+        count[soil] += 1
+        back = soil & (count == 4)
+        state[back] = PASTURE
+        count[back] = 0
+
+    def execute(self) -> None:
+        self.regrow()
+        self.rabbit_society.execute()
+        self.wolf_society.execute()
+        self._count()
+
+    def _count(self) -> None:
+        self.rabbits = len(self.rabbit_society)
+        self.wolves = len(self.wolf_society)
+
+
+def _who(cell) -> int:
+    agent = cell.agent
+    if agent is None:
+        return EMPTY
+    return WOLF if agent.name == "wolf" else RABBIT
+
+
+__all__ = [
+    "PredatorPrey",
+    "Rabbit",
+    "Wolf",
+    "SOIL",
+    "PASTURE",
+    "EMPTY",
+    "WOLF",
+    "RABBIT",
+    "STATE_COLORS",
+    "STATE_LABELS",
+    "WHO_COLORS",
+    "WHO_LABELS",
+]
