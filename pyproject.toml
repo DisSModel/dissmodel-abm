@@ -4,17 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dissmodel-abm"
-version = "0.1.0"
-description = "Agent-Based Modeling (ABM) extension for dissmodel, inspired by TerraME's Agent/Society API"
+version = "0.2.0"
+description = "TerraME-style agent-based modeling for DisSModel: agents, societies and placement on a raster cellular space"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
-    "dissmodel>=0.6.0",
-    "geopandas",
-    "shapely",
+    "dissmodel>=0.6.6",
     "numpy",
-    "pandas",
 ]
 
 [project.optional-dependencies]
@@ -26,6 +23,9 @@ viz = [
     "streamlit",
 ]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 packages = [
@@ -33,3 +33,18 @@ packages = [
     "dissmodel_abm.core",
     "dissmodel_abm.models",
 ]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+
+# Model code follows the Lua originals line by line and relies on cells that
+# exist (agent.cell, cs.get(x, y) inside the space). Optional checks stay on
+# in the core.
+[[tool.mypy.overrides]]
+module = "dissmodel_abm.models.*"
+disable_error_code = ["union-attr", "arg-type"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP"]
+ignore = ["E501"]
