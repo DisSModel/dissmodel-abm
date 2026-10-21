@@ -76,9 +76,7 @@ class LifeCycle(AgentModel):
         self.cs = CellSpace.grid(dim)
         self.cs.create_neighborhood()
         self.place(self.society, cellspace=self.cs)
-        self.cs.add_derived_band(
-            "state", lambda cell: EMPTY if cell.is_empty() else FULL, dtype=np.int8
-        )
+        self.cs.add_agent_band("state", lambda cell: FULL, empty=EMPTY, dtype=np.int8)
         self.agents = len(self.society)
 
     def execute(self) -> None:

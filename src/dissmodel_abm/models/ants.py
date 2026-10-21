@@ -243,7 +243,8 @@ class Ants(AgentModel):
         self.place(self.society, cellspace=self.cs, strategy="void")
         self.society.call("random_start")
 
-        self.cs.add_derived_band("view", _view, dtype=np.int8)
+        # ``cover`` with ANT where there are ants
+        self.cs.add_agent_band("view", lambda cell: ANT, background="cover", dtype=np.int8)
         # Counter changed by the ants (the original ``cs.food``); ``food``
         # copies it once per step so that the chart gets one point per step.
         self.remaining_food = initial_food
@@ -273,10 +274,6 @@ class Ants(AgentModel):
         self.society.execute()
         self.evaporate()
         self.food = self.remaining_food
-
-
-def _view(cell: Cell) -> int:
-    return ANT if cell.agents else cell.cover
 
 
 __all__ = [
