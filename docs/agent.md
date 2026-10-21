@@ -144,11 +144,58 @@ agents and of cells. As in TerraME, a view is computed when it is created
 and again on `filter()`; it does not follow changes by itself. Both have
 `sample()` and `randomize()`.
 
+## Social networks and messages
+
+`society.create_social_network(...)` gives every agent a social network,
+following TerraME's `createSocialNetwork`. The strategy is inferred from
+the arguments when omitted (`quantity`, `probability` or `filter`), or
+given explicitly:
+
+| Strategy | Connections of each agent |
+| --- | --- |
+| `"quantity"` | `quantity` other agents drawn at random |
+| `"probability"` | each other agent with `probability` |
+| `"function"` | the agents `b` for which `filter(a, b)` is true |
+| `"cell"` | the other agents in the same cell (`include_self` adds itself) |
+| `"neighbor"` | the agents in the neighboring cells |
+| `"erdos"` | `quantity` random undirected links in the whole society |
+| `"barabasi"` | preferential attachment: `start` seed agents, `quantity` links per later agent |
+| `"watts"` | ring of `quantity` neighbors, each link rewired with `probability` |
+| `"void"` | none; fill with `agent.get_social_network().add(other)` |
+
+With `inmemory=False` (first five strategies), the network is a function
+called at every `agent.get_social_network()`: new random contacts, or the
+agents in the current cell, every time. `symmetric=True` (for `"quantity"`
+and `"probability"` in memory) adds the reverse of each link. Several
+networks can coexist under different `name`s.
+
+A `SocialNetwork` keeps `(agent, weight)` pairs in insertion order, keyed by
+the agent itself, so it may join agents of different societies (TerraME
+keys by `id`, which repeats across societies). `agent.connections(name)`
+lists the connected agents, like `forEachConnection`.
+
+**Messages.** `agent.message(receiver, delay=0, subject=None, **content)`:
+
+- With `delay=0`, the receiver's handler runs now: `on_<subject>(msg)` when
+  a subject is given, `on_message(msg)` otherwise; `message` returns what
+  the handler returns.
+- With `delay > 0`, the message waits in the sender's society.
+  `society.execute()` first calls `society.synchronize()`, which subtracts
+  one step (the model's `step`) from each waiting message and delivers
+  those that reach zero, then runs the agents, as TerraME does for
+  `Event{action = society}`. A message sent with `delay=1` in step `t` is
+  received at the start of step `t + 1`, and the receiver can act on it in
+  that same step.
+- `msg.sender`, `msg.receiver`, `msg.subject` and `msg.content` describe the
+  message; extra keyword arguments can also be read as attributes
+  (`msg.value`).
+- A message to an agent that has died is dropped (TerraME warns and
+  ignores it); sending one with `delay=0` warns.
+
 ## Not yet available
 
 - A space of polygons (vector), with the neighborhoods of
   `dissmodel.geo.vector`.
 - Several named placements, and neighborhoods other than Moore and von
   Neumann (TerraME's `mxn`, `function`, `coord`).
-- Social networks and messages (`SocialNetwork`, `message`, `on_message`).
 - State machines (`State`, `Jump`, `Flow`).

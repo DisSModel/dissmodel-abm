@@ -15,8 +15,10 @@ from .core import (
     Cell,
     CellSpace,
     Group,
+    Message,
     Neighborhood,
     Society,
+    SocialNetwork,
     Trajectory,
 )
 
@@ -28,9 +30,11 @@ __all__ = [
     "Cell",
     "CellSpace",
     "Group",
+    "Message",
     "Neighborhood",
     "OCCUPANCY_BAND",
     "Society",
+    "SocialNetwork",
     "Trajectory",
     "__version__",
 ]

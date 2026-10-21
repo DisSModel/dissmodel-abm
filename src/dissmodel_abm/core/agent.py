@@ -36,6 +36,11 @@ TerraME                               dissmodel-abm
 ``agent:die()``                       ``agent.die()``
 ``agent:reproduce{...}``              ``agent.reproduce(...)``
 ``Random():number()``                 ``agent.rng.random()``
+``agent:addSocialNetwork(sn, name)``  ``agent.add_social_network(sn, name)``
+``agent:getSocialNetwork(name)``      ``agent.get_social_network(name)``
+``forEachConnection(agent, f)``       ``for other in agent.connections(): ...``
+``agent:message{receiver = b}``       ``agent.message(b)``
+``on_message``, ``on_<subject>``      ``def on_message(self, msg)``, ``def on_<subject>``
 ====================================  =========================================
 
 As in TerraME, ``move`` and ``enter`` do not check whether the target cell is
@@ -52,7 +57,10 @@ import numpy as np
 from . import _context
 
 if TYPE_CHECKING:  # pragma: no cover
+    from collections.abc import Callable
+
     from .cellspace import Cell
+    from .network import SocialNetwork
     from .society import Society
 
 
@@ -224,6 +232,86 @@ class Agent:
         if self.cell is not None:
             child.enter(self.cell)
         return child
+
+    # -- social networks (TerraME addSocialNetwork / getSocialNetwork) ----------------
+
+    def _networks(self) -> dict[str, Any]:
+        nets = self.__dict__.get("_social_networks")
+        if nets is None:
+            nets = {}
+            self.__dict__["_social_networks"] = nets
+        return nets
+
+    def add_social_network(
+        self,
+        network: SocialNetwork | Callable[[Agent], SocialNetwork],
+        name: str = "1",
+    ) -> None:
+        """
+        Give the agent a social network (TerraME ``addSocialNetwork``).
+
+        ``network`` may be a ``SocialNetwork`` or a function of the agent that
+        builds one; a function is called again at every
+        :meth:`get_social_network`, as TerraME's ``inmemory = false``.
+        """
+        self._networks()[name] = network
+
+    def get_social_network(self, name: str = "1") -> SocialNetwork | None:
+        """The social network called ``name``, or ``None`` (TerraME ``getSocialNetwork``)."""
+        net = self._networks().get(name)
+        if callable(net):
+            return net(self)
+        return net
+
+    def connections(self, name: str = "1") -> list[Agent]:
+        """The agents this agent is connected to (TerraME ``forEachConnection``)."""
+        net = self.get_social_network(name)
+        if net is None:
+            raise ValueError(f"Agent does not have a SocialNetwork named {name!r}.")
+        return list(net)
+
+    # -- messages (TerraME message / on_message) ---------------------------------------
+
+    def message(
+        self,
+        receiver: Agent,
+        delay: float = 0,
+        subject: str | None = None,
+        **content: Any,
+    ) -> Any:
+        """
+        Send a message to ``receiver`` (TerraME ``message``).
+
+        With ``delay = 0`` the receiver's handler runs now and its return value
+        is returned: ``on_<subject>(msg)`` when ``subject`` is given, otherwise
+        ``on_message(msg)``. With ``delay > 0`` the message waits in this
+        agent's society and is delivered by ``Society.synchronize()``, which
+        ``Society.execute()`` calls before running the agents, after
+        ``delay`` steps. Extra keyword arguments travel in ``msg.content`` and
+        can be read as attributes (``msg.value``).
+        """
+        from .network import Message, deliver
+
+        if not isinstance(receiver, Agent):
+            raise TypeError(f"receiver must be an Agent, got {type(receiver).__name__}.")
+        if delay < 0:
+            raise ValueError("Argument 'delay' must be non-negative.")
+        msg = Message(sender=self, receiver=receiver, delay=delay, subject=subject, content=content)
+        if delay == 0:
+            if not receiver.is_alive:
+                warnings.warn("Trying to send a message to a dead Agent.", stacklevel=2)
+                return None
+            return deliver(msg)
+        if self.society is None:
+            raise RuntimeError("Agent must be within a Society to send messages with delay.")
+        self.society._messages.append(msg)
+        return None
+
+    def on_message(self, msg: Any) -> Any:
+        """Handle a message without subject. Override in agents that receive messages."""
+        raise NotImplementedError(
+            f"{type(self).__name__} receives messages but does not implement on_message()."
+        )
 
     def __repr__(self) -> str:
         where = f"({self.cell.x}, {self.cell.y})" if self.cell is not None else "no cell"

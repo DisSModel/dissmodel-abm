@@ -17,6 +17,8 @@ TerraME                                    dissmodel-abm
 ``Group{target = soc, select = f}``        ``Group(soc, select=f)``
 ``group:filter()``                         ``group.filter()``
 ``Trajectory{target = cs, select = f}``    ``Trajectory(cs, select=f)``
+``soc:createSocialNetwork{...}``           ``soc.create_social_network(...)``
+``soc:synchronize()``                      ``soc.synchronize()`` (``execute()`` calls it)
 =========================================  ========================================
 
 Execution order
@@ -29,6 +31,14 @@ agent born during the step acts only from the next step.
 TerraME's loop differs in one corner case: it runs as many iterations as
 there were agents at the start, so when agents die, the same number of
 newborns at the end of the list may still act in the step they were born.
+
+Messages
+--------
+Messages sent with a delay wait in the sender's society. ``execute()`` first
+calls ``synchronize()``, which subtracts one step from every waiting message
+and delivers those that reach zero, and then runs the agents, as TerraME
+does for ``Event{action = society}``. A message sent with ``delay=1`` during
+step ``t`` is therefore received at the start of step ``t + 1``.
 """
 from __future__ import annotations
 
@@ -39,6 +49,7 @@ import numpy as np
 
 from . import _context
 from .agent import Agent
+from .network import Message, SocialNetwork, deliver
 
 if TYPE_CHECKING:  # pragma: no cover
     import geopandas as gpd
@@ -81,6 +92,7 @@ class Society(Generic[A]):
         self.model = _context.current_model()
         self._agents: dict[int, A] = {}
         self._next_id = 1
+        self._messages: list[Message] = []
         for _ in range(int(quantity)):
             self.add(**attrs)
 
@@ -152,16 +164,21 @@ class Society(Generic[A]):
 
     # -- execution --------------------------------------------------------------------
 
-    def execute(self, order: str = "insertion") -> None:
+    def execute(self, order: str = "insertion", period: float | None = None) -> None:
         """
-        Run ``execute()`` of each agent alive at the start of the step.
+        Deliver due messages, then run ``execute()`` of each agent alive at
+        the start of the step.
 
         Parameters
         ----------
         order : {"insertion", "random"}
             Creation order (TerraME's default) or a new random permutation
             drawn from the society's generator at every call.
+        period : float, optional
+            Time subtracted from waiting messages (see :meth:`synchronize`).
+            By default the step of the model that created the society, or 1.
         """
+        self.synchronize(period)
         agents = list(self._agents.values())
         if order == "random":
             agents = [agents[i] for i in self.rng.permutation(len(agents))]
@@ -170,6 +187,281 @@ class Society(Generic[A]):
         for agent in agents:
             if agent.is_alive and agent.society is self:
                 agent.execute()
+
+    def synchronize(self, delay: float | None = None) -> None:
+        """
+        Advance waiting messages by ``delay`` and deliver those that are due
+        (TerraME ``Society:synchronize``).
+
+        Messages sent while delivering wait for the next call. A message whose
+        receiver died meanwhile is dropped, as TerraME warns and ignores it.
+        """
+        if delay is None:
+            delay = getattr(self.model, "_step", 1) if self.model is not None else 1
+        if delay <= 0:
+            raise ValueError("Argument 'delay' must be positive.")
+        pending = self._messages
+        self._messages = []
+        keep: list[Message] = []
+        for msg in pending:
+            msg.delay -= delay
+            if msg.delay > 0:
+                keep.append(msg)
+            elif msg.receiver.is_alive:
+                msg.delay = 0
+                deliver(msg)
+        # messages sent during delivery were appended to the new list
+        self._messages = keep + self._messages
+
+    @property
+    def messages(self) -> list[Message]:
+        """Messages waiting to be delivered."""
+        return list(self._messages)
+
+    # -- social networks -----------------------------------------------------------------
+
+    def create_social_network(
+        self,
+        strategy: str | None = None,
+        *,
+        name: str = "1",
+        quantity: int | None = None,
+        probability: float | None = None,
+        filter: Callable[[A, A], bool] | None = None,  # noqa: A002 - TerraME's name
+        include_self: bool = False,
+        start: int | None = None,
+        inmemory: bool | None = None,
+        symmetric: bool = False,
+    ) -> None:
+        """
+        Connect the agents of the society (TerraME ``createSocialNetwork``).
+
+        Parameters
+        ----------
+        strategy : str, optional
+            How to connect. Inferred from the arguments when omitted, as in
+            TerraME (``quantity`` → ``"quantity"``, ``probability`` →
+            ``"probability"``, ``filter`` → ``"function"``):
+
+            - ``"quantity"``: each agent gets ``quantity`` other agents drawn
+              at random.
+            - ``"probability"``: each other agent is connected with
+              ``probability``.
+            - ``"function"``: ``filter(agent, other)`` decides each pair.
+            - ``"cell"``: the other agents in the same cell
+              (``include_self`` adds the agent itself).
+            - ``"neighbor"``: the agents in the neighboring cells.
+            - ``"erdos"``: ``quantity`` random undirected links in total.
+            - ``"barabasi"``: preferential attachment; the first ``start``
+              agents seed it and each later agent makes ``quantity`` links.
+            - ``"watts"``: ring of ``quantity`` neighbors per agent, each link
+              rewired at random with ``probability``.
+            - ``"void"``: empty networks, filled later with ``add``.
+        name : str
+            Name of the network (TerraME's default is ``"1"``).
+        inmemory : bool, optional
+            For the first five strategies: ``True`` (default) builds the
+            networks now; ``False`` stores a function, so that every
+            ``get_social_network`` builds a new network (new random contacts,
+            current cell). The graph strategies are always in memory.
+        symmetric : bool
+            For ``"quantity"`` and ``"probability"`` in memory: when ``a`` is
+            connected to ``b``, also connect ``b`` to ``a``.
+        """
+        if strategy is None:
+            candidates = []
+            if probability is not None:
+                candidates.append("probability")
+            if quantity is not None:
+                candidates.append("quantity")
+            if filter is not None:
+                candidates.append("function")
+            if len(candidates) != 1:
+                raise ValueError(
+                    "Could not infer argument 'strategy'; give it explicitly."
+                    if candidates
+                    else "It was not possible to infer a value for argument 'strategy'."
+                )
+            strategy = candidates[0]
+
+        agents = list(self._agents.values())
+        if not agents:
+            raise ValueError("Cannot create a social network in an empty Society.")
+        if any(name in a._networks() for a in agents):
+            raise ValueError(f"SocialNetwork {name!r} already exists in the Society.")
+
+        graph = strategy in ("erdos", "barabasi", "watts", "void")
+        if graph and inmemory is not None and strategy != "void":
+            raise ValueError(f"Argument 'inmemory' does not work with strategy {strategy!r}.")
+        if inmemory is None:
+            inmemory = True
+        if symmetric and strategy not in ("quantity", "probability"):
+            raise ValueError("Argument 'symmetric' works only with 'quantity' and 'probability'.")
+        if symmetric and not inmemory:
+            raise ValueError("Argument 'symmetric' needs inmemory=True.")
+
+        rng = self.rng
+        builder: Callable[[A], SocialNetwork]
+
+        if strategy == "quantity":
+            if quantity is None or quantity < 1:
+                raise ValueError("Argument 'quantity' must be a positive integer.")
+            if quantity > len(agents) - 1:
+                raise ValueError(
+                    f"It is not possible to connect such amount of agents ({quantity}). "
+                    f"The Society only has {len(agents)} agents."
+                )
+
+            def builder(agent: A) -> SocialNetwork:
+                pool = list(self._agents.values())
+                net = SocialNetwork()
+                while len(net) < quantity:
+                    other = pool[int(rng.integers(len(pool)))]
+                    if other is not agent and other not in net:
+                        net.add(other)
+                return net
+
+        elif strategy == "probability":
+            if probability is None or not 0 < probability <= 1:
+                raise ValueError("Argument 'probability' must be a number in (0, 1].")
+
+            def builder(agent: A) -> SocialNetwork:
+                net = SocialNetwork()
+                for other in list(self._agents.values()):
+                    if other is not agent and rng.random() < probability:
+                        net.add(other)
+                return net
+
+        elif strategy == "function":
+            if filter is None:
+                raise ValueError("Strategy 'function' needs argument 'filter'.")
+
+            def builder(agent: A) -> SocialNetwork:
+                net = SocialNetwork()
+                for other in list(self._agents.values()):
+                    if filter(agent, other):
+                        net.add(other)
+                return net
+
+        elif strategy in ("cell", "neighbor"):
+            if any(a.cell is None for a in agents):
+                raise ValueError("Society has no placement. Call model.place() first.")
+
+            if strategy == "cell":
+
+                def builder(agent: A) -> SocialNetwork:
+                    net = SocialNetwork()
+                    for other in list(agent.cell.agents):  # type: ignore[union-attr]
+                        if other is not agent or include_self:
+                            net.add(other)
+                    return net
+
+            else:
+
+                def builder(agent: A) -> SocialNetwork:
+                    net = SocialNetwork()
+                    for neigh in agent.cell.neighborhood:  # type: ignore[union-attr]
+                        for other in neigh.agents:
+                            if other not in net:
+                                net.add(other)
+                    return net
+
+        elif strategy == "void":
+            for agent in agents:
+                agent.add_social_network(SocialNetwork(), name)
+            return
+
+        elif strategy == "erdos":
+            self._erdos(agents, name, quantity)
+            return
+        elif strategy == "barabasi":
+            self._barabasi(agents, name, quantity, start)
+            return
+        elif strategy == "watts":
+            self._watts(agents, name, quantity, probability)
+            return
+        else:
+            raise ValueError(f"Unknown strategy {strategy!r}.")
+
+        if inmemory:
+            for agent in agents:
+                agent.add_social_network(builder(agent), name)
+        else:
+            for agent in agents:
+                agent.add_social_network(builder, name)  # type: ignore[arg-type]
+
+        if symmetric:
+            for agent in agents:
+                for other in agent.connections(name):
+                    net = other.get_social_network(name)
+                    if net is not None and agent not in net:
+                        net.add(agent)
+
+    def _void(self, agents: list[A], name: str) -> list[SocialNetwork]:
+        nets = [SocialNetwork() for _ in agents]
+        for agent, net in zip(agents, nets, strict=True):
+            agent.add_social_network(net, name)
+        return nets
+
+    def _erdos(self, agents: list[A], name: str, quantity: int | None) -> None:
+        n = len(agents)
+        if quantity is None or quantity < 1:
+            raise ValueError("Argument 'quantity' must be a positive integer.")
+        if quantity > n * (n - 1) // 2:
+            raise ValueError("Argument 'quantity' is larger than the number of possible links.")
+        nets = dict(zip(agents, self._void(agents, name), strict=True))
+        for _ in range(quantity):
+            a1 = agents[int(self.rng.integers(n))]
+            a2 = a1
+            while a2 is a1 or a2 in nets[a1]:
+                a2 = agents[int(self.rng.integers(n))]
+            nets[a1].add(a2)
+            nets[a2].add(a1)
+
+    def _barabasi(
+        self, agents: list[A], name: str, quantity: int | None, start: int | None
+    ) -> None:
+        n = len(agents)
+        if start is None or start < 1 or quantity is None or quantity < 1:
+            raise ValueError("Strategy 'barabasi' needs positive 'start' and 'quantity'.")
+        if start >= n:
+            raise ValueError("Argument 'start' should be less than the total of Agents in the Society.")
+        if quantity >= start:
+            raise ValueError("Argument 'quantity' should be less than 'start'.")
+        nets = self._void(agents, name)
+        count = start
+        for i in range(start, n):
+            agent, net = agents[i], nets[i]
+            while len(net) < quantity:
+                value = int(self.rng.integers(1, count + 1))
+                position = -1
+                while value > 0:
+                    position += 1
+                    value -= len(nets[position]) + 1
+                candidate = agents[position]
+                if candidate not in net:
+                    nets[position].add(agent)
+                    net.add(candidate)
+                    count += 1
+            count += quantity + 1
+
+    def _watts(
+        self, agents: list[A], name: str, quantity: int | None, probability: float | None
+    ) -> None:
+        n = len(agents)
+        if quantity is None or quantity < 1:
+            raise ValueError("Argument 'quantity' must be a positive integer.")
+        if probability is None or not 0 <= probability <= 1:
+            raise ValueError("Argument 'probability' should be between 0 and 1.")
+        nets = dict(zip(agents, self._void(agents, name), strict=True))
+        for i, a1 in enumerate(agents):
+            net = nets[a1]
+            for dist in range(1, quantity + 1):
+                a2 = a1 if self.rng.random() < probability else agents[(i + dist) % n]
+                while a2 is a1 or a2 in net:
+                    a2 = agents[int(self.rng.integers(n))]
+                nets[a2].add(a1)
+                net.add(a2)
 
     def call(self, method: str, *args: Any, **kwargs: Any) -> list[Any]:
         """Call ``method`` on every agent, in creation order, and return the results."""
