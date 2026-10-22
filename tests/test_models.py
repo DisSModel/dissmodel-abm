@@ -117,7 +117,10 @@ def test_schelling_converges():
     start = m.percent_unhappy()
     env.run()
     assert start > 20
-    assert m.percent_unhappy() == 0
+    # the group of unhappy agents empties; as in TerraME, agents that became
+    # unhappy after leaving it are not moved again
+    assert m.unhappy == 0 and len(m.unhappy_agents) == 0
+    assert m.percent_unhappy() < start / 2
 
 
 # -- PredatorPrey --------------------------------------------------------------------------------
@@ -156,6 +159,28 @@ def test_life_cycle_matches_reference_chart_before_the_cap():
     # docstring about the rule change after that image)
     values = [run(LifeCycle, 40, seed=s).agents for s in range(10)]
     assert 70 < np.median(values) < 115
+
+
+def life_cycle_expected(steps, quantity=10):
+    """Exact expected population: ages advance, births at 15-30 (p = 0.3), deaths from 20 (p = 0.05)."""
+    pop = np.zeros(steps + 1)
+    pop[0] = quantity
+    for _ in range(steps):
+        new = np.zeros_like(pop)
+        ages = np.arange(1, steps + 1)
+        survive = np.where(ages >= 20, 0.95, 1.0)
+        new[1:] = pop[:-1] * survive
+        new[0] = (pop[:-1] * ((ages >= 15) & (ages <= 30)) * 0.3).sum()
+        pop = new
+    return pop.sum()
+
+
+def test_life_cycle_mean_matches_the_exact_expectation():
+    # The population is a branching process whose mean can be computed exactly.
+    # 400 runs: standard error about 0.8 agents at t = 40
+    values = np.array([run(LifeCycle, 40, seed=s).agents for s in range(400)])
+    se = values.std(ddof=1) / np.sqrt(len(values))
+    assert abs(values.mean() - life_cycle_expected(40)) < 4 * se
 
 
 def test_life_cycle_child_can_share_a_cell():

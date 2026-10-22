@@ -190,10 +190,23 @@ named placements.
 ## Group and Trajectory
 
 `Group(society, select=fn, sort=key, random=False)` and
-`Trajectory(cs, select=fn, sort=key, random=False)` are filtered views of
-agents and of cells. As in TerraME, a view is computed when it is created
-and again on `filter()`; it does not follow changes by itself. Both have
-`sample()` and `randomize()`.
+`Trajectory(cs, select=fn, sort=key, random=False)` are filtered subsets of
+agents and of cells. As in TerraME, a subset is built from its target when it
+is created and does not follow changes by itself:
+
+- `filter()` applies `select` again to the **current members only**. An
+  agent that left the group does not come back, and agents of the society
+  outside the group are not looked at (TerraME `Group:filter`). A group of
+  unhappy agents filtered every step therefore empties, even if some agents
+  become unhappy again after leaving it; this is how `Schelling` stops.
+- `rebuild()` builds the subset again from the target, as if it were created
+  again (TerraME `rebuild`).
+- `sort()` sorts by the `sort` key, `randomize()` shuffles, `sample()` draws
+  one member.
+
+A `Group` can also take another `Group` as target. `filter()` without
+`select`, `sort()` without `sort`, and `sort` together with `random` raise
+`ValueError`, as in TerraME. `filter()` also drops agents that died.
 
 ## Social networks and messages
 

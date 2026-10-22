@@ -12,16 +12,24 @@ Rules, as in the original
   random (``Random{"brazil", "germany"}``), placed at random, one per cell.
 - An agent is unhappy when fewer than ``preference`` of its neighbors are
   agents of its own kind.
-- **One** move per step: the group of unhappy agents is rebuilt, one of them
-  is drawn at random and moves to a random empty cell anywhere in the space.
+- **One** move per step: the group of unhappy agents is filtered, one of
+  them is drawn at random and moves to a random empty cell anywhere in the
+  space.
+- The group is built once, at the start, and ``filter()`` only checks its
+  current members again (TerraME ``Group:filter``): an agent outside the
+  group (happy at the start, or happy at some step) is never checked again,
+  even if a later move makes it unhappy. So the group empties and the
+  moves stop while some agents (about 5 % with the defaults) are still
+  unhappy.
 
 Defaults follow the code of the original: ``dim = 25``, ``preference = 3``,
 ``free_space = 0.05`` (a ``Choice{min = 0.05, max = 0.20}`` takes its
 minimum as default; the help text of the original says 25) and
 ``finalTime = 500``.
 
-``unhappy`` is the percentage of unhappy agents counted when the step
-starts, before the move, which is what the original chart shows.
+``unhappy`` is the size of the group of unhappy agents, after the filter
+and before the move, as a percentage of the society: what the original
+chart shows. :meth:`Schelling.percent_unhappy` counts every unhappy agent.
 """
 from __future__ import annotations
 
@@ -88,7 +96,7 @@ class Schelling(AgentModel):
             "state", lambda cell: _CODES[cell.agent.state], empty=FREE, dtype=np.int8
         )
         self.unhappy_agents = Group(self.society, select=lambda a: a.is_unhappy(self.preference))
-        self.unhappy = self.percent_unhappy()
+        self.unhappy = 100.0 * len(self.unhappy_agents) / len(self.society)
 
     def execute(self) -> None:
         self.unhappy_agents.filter()

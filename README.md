@@ -92,7 +92,7 @@ cell after every step, ready for `RasterMap(backend=model.cs.backend, band="n_ag
 | `agent:walk()`, `walkIfEmpty()`, `walkToEmpty()` | `agent.walk()`, `walk_if_empty()`, `walk_to_empty()` |
 | `agent:emptyNeighbor()` | `agent.empty_neighbor()` |
 | `agent:die()`, `agent:reproduce()` | `agent.die()`, `agent.reproduce()` |
-| `Group{target = soc, select = f}`, `group:filter()` | `Group(soc, select=f)`, `group.filter()` |
+| `Group{target = soc, select = f}`, `group:filter()`, `group:rebuild()` | `Group(soc, select=f)`, `group.filter()`, `group.rebuild()` |
 | `Trajectory{target = cs, select = f}` | `Trajectory(cs, select=f)` |
 | `soc:myFunction()` (on every agent) | `soc.call("my_function")` |
 | `soc:createSocialNetwork{quantity = 6}` | `soc.create_social_network(quantity=6)` |
@@ -131,38 +131,45 @@ backend.
 ### How the ports were checked
 
 TerraME and NumPy draw different random numbers, so a run cannot be
-compared with TerraME value by value. The tests check the rules
-(invariants such as at most one agent per cell, one move per step in
-Schelling, pasture regrowth) and that the same seed gives the same bands.
-Where `logo` keeps a reference chart from its own tests (`log/*-chart-1.bmp`),
-the port was run over several seeds and compared with it:
+compared with TerraME value by value. Two kinds of tests check the ports:
 
-| Model | Reference chart (`logo`) | Port (median over seeds) |
-| --- | --- | --- |
-| `PredatorPrey`, t = 20 | about 858 rabbits, 17 wolves | 857 rabbits, 16 wolves (10 seeds) |
-| `Schelling`, t = 0 | 18.4 % unhappy | 18.1 % (10 seeds) |
-| `LifeCycle`, t = 40 | about 91 agents | 94.5 (20 seeds) |
-| `Ants`, first food taken | t = 8 | t = 8 in 14 of 50 seeds, never earlier |
-| `Ants`, food left at t = 40 | 97 | 90 (50 seeds; 97 or more in 2) |
-| `Disease`, peak of infected | about 650, at t = 10 | 666 at t = 10 (30 seeds) |
-| `Disease`, never infected at t = 30 | about 12 to 17 | 2 (30 seeds; 0 to 7) |
+- **Rules** (`tests/test_models.py`): invariants such as at most one agent
+  per cell, one move per step in Schelling, pasture regrowth, and that the
+  same seed gives the same bands. The mean population of `LifeCycle`, a
+  branching process, is checked against its exact expectation.
+- **TerraME itself** (`tests/test_goldens.py`, marker `golden`): the models
+  of `logo` 0.5.6 were run in TerraME 2.0.1 for seeds 1 to 50
+  ([`terrame-goldens`](https://github.com/LambdaGeo/terrame-goldens)), and
+  20 runs of each port are compared with them at a few steps, with a
+  Kolmogorov-Smirnov test and a test on the means
+  (`tests/goldens/` holds the extract and how it was made).
 
-Three findings came out of this comparison:
+| Model | Variable, step | TerraME (50 seeds) | Port (20 seeds) |
+| --- | --- | --- | --- |
+| `Schelling` | unhappy agents (%), t = 500 | 5.6 ± 0.8 | 5.6 ± 1.0 |
+| `PredatorPrey` | rabbits, t = 20 | 855 ± 6 | 859 ± 7 |
+| `PredatorPrey` | wolves, t = 20 | 15.8 ± 2.0 | 15.2 ± 1.9 |
+| `LifeCycle` | agents, t = 40 | 101 ± 16 | 92 ± 12 (exact mean: 97.8) |
+| `Ants` | food left, t = 40 | 90.4 ± 3.3 | 90.3 ± 4.0 |
+| `Disease` | never infected, t = 30 | 2.7 ± 1.8 | 2.6 ± 1.2 |
 
+What came out of this comparison:
+
+- `Schelling` first stopped with almost no unhappy agents (0.4 % at
+  t = 500) where TerraME leaves 5.6 %. The cause was `Group.filter()`, which
+  rebuilt the group from the whole society; TerraME's `filter` only checks
+  the current members again, so an agent that becomes unhappy after leaving
+  the group is never moved. `Group` and `Trajectory` now follow TerraME
+  (`filter` and `rebuild`, see `docs/agent.md`).
+- The differences that the single reference charts of `logo` suggested in
+  `Ants` (food left at t = 40: 97 in the chart) and `Disease` (12 to 17
+  agents never infected) were chance: over 50 seeds TerraME gives the same
+  as the port.
 - The `LifeCycle` chart in `logo` (2016) was made with an earlier birth
   rule that placed children only in empty neighbors, and it levels off near
   100 agents. The current code lets a child share its parent's cell, so the
-  population is not capped. The port follows the current code.
-- In `Ants`, the port takes more food by step 40 than the single reference
-  run. Whether this is chance or a difference (the order in which TerraME
-  2.0 visited neighbors is the main suspect) needs several runs of the
-  original, for example in the `terrame-docker` image.
-- In `Disease`, the peak agrees, but the port leaves fewer agents never
-  infected. The port's number is what the SIR final-size equation gives for
-  four rounds of six messages at probability 0.25 (R0 = 6); the reference
-  would need R0 near 4.5, which would also lower the peak. Neither the code
-  of `logo` nor that of TerraME's `base` package explains the difference, so
-  it also needs several runs of the original.
+  population is not capped. The port follows the current code, and TerraME
+  agrees.
 
 The ports also keep two details of the original that look like slips:
 `Schelling` defaults to 5 % free space (the help text says 25), and in

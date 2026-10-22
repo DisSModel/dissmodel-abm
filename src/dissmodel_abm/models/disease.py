@@ -24,18 +24,15 @@ Rules, as in the original
 Defaults: ``quantity = 1000``, ``duration = 2``, ``contacts = 6``,
 ``probability = 0.25``, ``finalTime = 30``.
 
-Comparison with the reference chart of ``logo``
------------------------------------------------
+Comparison with TerraME
+-----------------------
 ``log/Disease-chart-1.bmp`` (July 2017, same rules as the current code)
-peaks near 650 infected at step 10 and ends with about 12 to 17 agents
-never infected. Over 30 seeds the port peaks at 666 (612 to 699), also at
-step 10, but ends with 2 susceptible agents (0 to 7). With four rounds of
-six messages at probability 0.25 (R0 = 6), the final-size equation of the
-SIR model gives about 2.5 of 1000, as in the port; 12 would need R0 near
-4.5, but running the port with three rounds (``duration = 1``) brings the
-peak down to about 460. The difference is not explained by the code of
-``logo`` or of TerraME's ``base`` package and needs several runs of the
-original (for example in the ``terrame-docker`` image).
+ends with about 12 to 17 agents never infected, where the port ends with
+about 2. That chart is a single run: over 50 seeds, TerraME itself ends
+with 2.7 never infected (0 to 7), as the port does and as the final-size
+equation of the SIR model gives for R0 = 6 (four rounds of six messages at
+probability 0.25). ``tests/test_goldens.py`` compares the port with those
+TerraME runs.
 """
 from __future__ import annotations
 
