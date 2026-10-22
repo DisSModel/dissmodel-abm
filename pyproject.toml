@@ -44,6 +44,9 @@ Changelog = "https://github.com/DisSModel/dissmodel-abm/blob/main/CHANGELOG.md"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "golden: compares the logo models with TerraME runs (tests/goldens; about 20 s)",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased]
+
+- `Group.filter()` and `Trajectory.filter()` now follow TerraME: they apply
+  `select` again to the current members only. The new `rebuild()` builds
+  the subset again from its target (what `filter()` did before), and
+  `sort()` sorts it. `filter()` without `select`, `sort()` without a key, and
+  `sort` with `random` raise `ValueError`.
+- `Schelling` changes with it: as in TerraME, the group of unhappy agents
+  empties while about 5 % of the agents are still unhappy (before, almost
+  none were).
+- Tests against TerraME: `tests/test_goldens.py` compares every ported
+  `logo` model with 50 TerraME runs from `terrame-goldens`
+  (`pytest -m golden`), and a test checks the mean population of
+  `LifeCycle` against its exact expectation. The README replaces the
+  comparison with the single reference charts of `logo`: the differences
+  it listed in `Ants` and `Disease` were chance.
+
 ## [0.2.0] — unreleased
 
 Complete rewrite in the style of TerraME. The 0.1 API (agents as rows of a

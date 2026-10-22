@@ -505,10 +505,16 @@ class Society(Generic[A]):
 
 class Group(Generic[A]):
     """
-    A filtered and optionally sorted view of a society (TerraME ``Group``).
+    A filtered and optionally sorted subset of a society (TerraME ``Group``).
 
-    The view is computed when the group is created and again on each
-    :meth:`filter` call, as in TerraME; it does not follow the society by itself.
+    As in TerraME, the group is built from its target when it is created and
+    does not follow the target by itself afterwards:
+
+    - :meth:`filter` applies ``select`` again to the *current members* only,
+      so an agent that left the group does not come back (TerraME
+      ``filter``);
+    - :meth:`rebuild` builds the group again from the target, as if it were
+      created again (TerraME ``rebuild``).
     """
 
     def __init__(
@@ -518,22 +524,40 @@ class Group(Generic[A]):
         sort: Callable[[A], Any] | None = None,
         random: bool = False,
     ) -> None:
+        if sort is not None and random:
+            raise ValueError("A Group cannot use both 'sort' and 'random'.")
         self.target = target
         self.select = select
         self.sort_key = sort
         self.random = random
         self.rng: np.random.Generator = target.rng
         self.agents: list[A] = []
-        self.filter()
+        self.rebuild()
 
-    def filter(self) -> None:
-        """Rebuild the group from its target (TerraME ``filter``/``rebuild``)."""
-        agents = [a for a in self.target if self.select is None or self.select(a)]
-        if self.sort_key is not None:
-            agents.sort(key=self.sort_key)
-        self.agents = agents
+    def rebuild(self) -> None:
+        """Build the group again from its target (TerraME ``rebuild``)."""
+        self.agents = [a for a in self.target if self.select is None or self.select(a)]
         if self.random:
             self.randomize()
+        elif self.sort_key is not None:
+            self.sort()
+
+    def filter(self) -> None:
+        """
+        Apply ``select`` again to the current members (TerraME ``filter``).
+
+        Agents of the target that are not in the group are not looked at, and
+        the order of the members is kept. Agents that died are dropped.
+        """
+        if self.select is None:
+            raise ValueError("Cannot filter a Group without a 'select' function.")
+        self.agents = [a for a in self.agents if a.is_alive and self.select(a)]
+
+    def sort(self) -> None:
+        """Sort the members by the ``sort`` key (TerraME ``sort``)."""
+        if self.sort_key is None:
+            raise ValueError("Cannot sort a Group without a 'sort' function.")
+        self.agents.sort(key=self.sort_key)
 
     def randomize(self) -> None:
         self.agents = [self.agents[i] for i in self.rng.permutation(len(self.agents))]
@@ -562,7 +586,9 @@ class Trajectory:
     """
     A filtered and optionally sorted list of cells (TerraME ``Trajectory``).
 
-    Rebuilt on creation and on each :meth:`filter` call.
+    Built from the cell space when it is created. As in :class:`Group`,
+    :meth:`filter` applies ``select`` again to the current cells only, and
+    :meth:`rebuild` builds the trajectory again from the cell space.
     """
 
     def __init__(
@@ -572,21 +598,35 @@ class Trajectory:
         sort: Callable[[Cell], Any] | None = None,
         random: bool = False,
     ) -> None:
+        if sort is not None and random:
+            raise ValueError("A Trajectory cannot use both 'sort' and 'random'.")
         self.target = target
         self.select = select
         self.sort_key = sort
         self.random = random
         self.rng: np.random.Generator = target.rng
         self.cells: list[Cell] = []
-        self.filter()
+        self.rebuild()
 
-    def filter(self) -> None:
-        cells = [c for c in self.target if self.select is None or self.select(c)]
-        if self.sort_key is not None:
-            cells.sort(key=self.sort_key)
-        self.cells = cells
+    def rebuild(self) -> None:
+        """Build the trajectory again from the cell space (TerraME ``rebuild``)."""
+        self.cells = [c for c in self.target if self.select is None or self.select(c)]
         if self.random:
             self.randomize()
+        elif self.sort_key is not None:
+            self.sort()
+
+    def filter(self) -> None:
+        """Apply ``select`` again to the current cells (TerraME ``filter``)."""
+        if self.select is None:
+            raise ValueError("Cannot filter a Trajectory without a 'select' function.")
+        self.cells = [c for c in self.cells if self.select(c)]
+
+    def sort(self) -> None:
+        """Sort the cells by the ``sort`` key (TerraME ``sort``)."""
+        if self.sort_key is None:
+            raise ValueError("Cannot sort a Trajectory without a 'sort' function.")
+        self.cells.sort(key=self.sort_key)
 
     def randomize(self) -> None:
         self.cells = [self.cells[i] for i in self.rng.permutation(len(self.cells))]

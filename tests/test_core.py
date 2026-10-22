@@ -109,8 +109,13 @@ def test_trajectory_select_and_sample():
     t = Trajectory(cs, select=lambda c: c.v == 1)
     assert len(t) == 1 and t.sample() is cs.get(1, 1)
     cs.get(0, 0).v = 1
-    t.filter()
+    t.filter()  # TerraME: only the current cells are looked at
+    assert len(t) == 1
+    t.rebuild()
     assert len(t) == 2
+    cs.get(1, 1).v = 0
+    t.filter()
+    assert [c for c in t] == [cs.get(0, 0)]
 
 
 # -- Agent and Society ------------------------------------------------------------------
@@ -240,6 +245,40 @@ def test_group_filter_sort_sample():
     g.filter()
     assert [a.id for a in g] == [4, 3]
     assert g.sample() in (soc[3], soc[4])
+
+
+def test_group_filter_keeps_out_agents_that_left():
+    # TerraME: filter() looks at the current members only; rebuild() at the society
+    soc = Society(Counter, quantity=4, rng=rng())
+    for a in soc:
+        a.energy = 0
+    soc[2].energy = soc[3].energy = 1
+    g = Group(soc, select=lambda a: a.energy == 1)
+    assert [a.id for a in g] == [2, 3]
+    soc[2].energy = 0
+    soc[1].energy = 1
+    g.filter()
+    assert [a.id for a in g] == [3]  # agent 1 is not looked at, agent 2 left
+    soc[2].energy = 1
+    g.filter()
+    assert [a.id for a in g] == [3]  # agent 2 does not come back
+    g.rebuild()
+    assert [a.id for a in g] == [1, 2, 3]
+
+
+def test_group_of_a_group_and_errors():
+    soc = Society(Counter, quantity=6, rng=rng())
+    for a in soc:
+        a.energy = a.id
+    big = Group(soc, select=lambda a: a.energy > 2)
+    even = Group(big, select=lambda a: a.id % 2 == 0, sort=lambda a: -a.id)
+    assert [a.id for a in even] == [6, 4]
+    with pytest.raises(ValueError):
+        Group(soc).filter()
+    with pytest.raises(ValueError):
+        Group(soc).sort()
+    with pytest.raises(ValueError):
+        Group(soc, sort=lambda a: a.id, random=True)
 
 
 def test_society_call_and_count():
