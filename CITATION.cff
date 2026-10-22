@@ -11,6 +11,7 @@ authors:
     given-names: "Sérgio Souza"
     orcid: "https://orcid.org/0000-0002-0232-4549"
 version: 0.2.0
+date-released: "2026-10-22"
 license: MIT
 url: "https://github.com/DisSModel/dissmodel-abm"
 repository-code: "https://github.com/DisSModel/dissmodel-abm"
