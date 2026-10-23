@@ -13,7 +13,7 @@
     "goldens/logo/schelling.csv.gz": "d149203f8d909404d56d96279ed4ef7ed7777ed7379447a6c25a27da7ea3f5d3",
     "goldens/logo/predator_prey.csv.gz": "bbf4ffaa7855b6f2b86ee02a845c243d986d538a7b76cb934c05602bc67e9019",
     "goldens/logo/life_cycle.csv.gz": "b6c57ac68b3ca716cce004028c8d1e0abddcafb7d56bbda58b7191b361a2acff",
-    "goldens/logo/ants.csv.gz": "f89d814ba4e75e2ab8ac5bc9f23fffc0ecc238514703f1e6d7c5986e36e23c1d",
+    "goldens/logo/ants.csv.gz": "356ad4fd9fcef86bce572f453d83e2ad0de395dfaaa4d2c7844ee513e0bfa4c2",
     "goldens/logo/disease.csv.gz": "cf537e526fdde29d84cb6d06d62fd8d32e9346dddd3dc4bb1a34afe03efb103f"
   },
   "checkpoints": {
