@@ -150,7 +150,7 @@ compared with TerraME value by value. Two kinds of tests check the ports:
 | `PredatorPrey` | rabbits, t = 20 | 855 ± 6 | 859 ± 7 |
 | `PredatorPrey` | wolves, t = 20 | 15.8 ± 2.0 | 15.2 ± 1.9 |
 | `LifeCycle` | agents, t = 40 | 101 ± 16 | 92 ± 12 (exact mean: 97.8) |
-| `Ants` | food left, t = 40 | 90.4 ± 3.3 | 90.3 ± 4.0 |
+| `Ants` | food left, t = 40 | 90.6 ± 3.1 | 90.3 ± 4.0 |
 | `Disease` | never infected, t = 30 | 2.7 ± 1.8 | 2.6 ± 1.2 |
 
 What came out of this comparison:
