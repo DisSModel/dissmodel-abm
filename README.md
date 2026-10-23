@@ -139,7 +139,8 @@ compared with TerraME value by value. Two kinds of tests check the ports:
   branching process, is checked against its exact expectation.
 - **TerraME itself** (`tests/test_goldens.py`, marker `golden`): the models
   of `logo` 0.5.6 were run in TerraME 2.0.1 for seeds 1 to 50
-  ([`terrame-goldens`](https://github.com/LambdaGeo/terrame-goldens)), and
+  ([`terrame-goldens`](https://github.com/LambdaGeo/terrame-goldens) v0.1.0,
+  [10.5281/zenodo.23592970](https://doi.org/10.5281/zenodo.23592970)), and
   20 runs of each port are compared with them at a few steps, with a
   Kolmogorov-Smirnov test and a test on the means
   (`tests/goldens/` holds the extract and how it was made).
