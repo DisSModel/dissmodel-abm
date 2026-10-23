@@ -1,7 +1,8 @@
 # TerraME reference values for the logo models
 
 `logo_reference.csv` is an extract of the `logo` suite of
-[`terrame-goldens`](https://github.com/LambdaGeo/terrame-goldens) v0.1.0:
+[`terrame-goldens`](https://github.com/LambdaGeo/terrame-goldens) v0.1.0
+(DOI [10.5281/zenodo.23592970](https://doi.org/10.5281/zenodo.23592970)):
 what TerraME 2.0.1 computed running the models of the
 [`logo`](https://github.com/TerraME/logo) package (commit `bb57a26`) with
 default parameters, for seeds 1 to 50. Only the steps compared by
